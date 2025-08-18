@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>Projects</h3>
+<ul class="list-group mb-4">
+  {% for p in projects %}
+    <li class="list-group-item d-flex justify-content-between">
+      <a href="{{ url_for('view_project', project_id=p.id) }}">{{ p.title }}</a>
+      <small class="text-muted">{{ p.created_at.strftime('%Y-%m-%d') }}</small>
+    </li>
+  {% else %}
+    <li class="list-group-item">No projects yet.</li>
+  {% endfor %}
+</ul>
+
+<form method="post" action="{{ url_for('create_project') }}" class="card card-body">
+  <h5 class="mb-3">New Project</h5>
+  <input class="form-control mb-2" name="title" placeholder="Title" required>
+  <textarea class="form-control mb-3" name="description" placeholder="Description"></textarea>
+  <button class="btn btn-primary">Create Project</button>
+</form>
+{% endblock %}

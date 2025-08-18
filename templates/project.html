@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>{{ p.title }}</h3>
+<p class="text-muted">{{ p.description }}</p>
+
+<h5 class="mt-4">Experiments</h5>
+<ul class="list-group mb-4">
+  {% for e in p.experiments %}
+    <li class="list-group-item">
+      <a href="{{ url_for('view_experiment', experiment_id=e.id) }}">{{ e.title }}</a>
+      <div><small class="text-muted">{{ e.created_at.strftime('%Y-%m-%d') }}</small></div>
+    </li>
+  {% else %}
+    <li class="list-group-item">No experiments yet.</li>
+  {% endfor %}
+</ul>
+
+<form method="post" action="{{ url_for('create_experiment', project_id=p.id) }}" class="card card-body">
+  <h6 class="mb-3">New Experiment</h6>
+  <input class="form-control mb-2" name="title" placeholder="Title" required>
+  <textarea class="form-control mb-3" name="description" placeholder="Description"></textarea>
+  <button class="btn btn-primary">Add Experiment</button>
+</form>
+{% endblock %}
