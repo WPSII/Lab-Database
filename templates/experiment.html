@@ -1,24 +1,67 @@
 {% extends "base.html" %}
 {% block content %}
-<h3>{{ e.title }}</h3>
-<p class="text-muted">{{ e.description }}</p>
-<p><a href="{{ url_for('view_project', project_id=e.project.id) }}">&larr; Back to project</a></p>
 
-<h5 class="mt-4">Documents</h5>
-<ul class="list-group mb-4">
-  {% for d in e.documents %}
-    <li class="list-group-item d-flex justify-content-between align-items-center">
-      <span>{{ d.filename }}</span>
-      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('download', doc_id=d.id) }}">Download</a>
-    </li>
-  {% else %}
-    <li class="list-group-item">No documents uploaded.</li>
-  {% endfor %}
-</ul>
+<p class="mb-3">
+  <a href="{{ url_for('view_project', project_id=experiment.project.id) }}">&larr; Back to project</a>
+</p>
 
-<form class="card card-body" method="post" action="{{ url_for('upload_document', experiment_id=e.id) }}" enctype="multipart/form-data">
-  <h6 class="mb-3">Upload Document</h6>
-  <input type="file" name="file" class="form-control mb-3" required>
-  <button class="btn btn-primary">Upload</button>
-</form>
+<h2 class="mb-1">{{ experiment.title }}</h2>
+<div class="text-muted mb-3">
+  Project: <a href="{{ url_for('view_project', project_id=experiment.project.id) }}">{{ experiment.project.title }}</a>
+  &middot; Created {{ experiment.created_at.strftime('%Y-%m-%d') }}
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-6">
+    <!-- Details -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Details</h5>
+      <p class="mb-0" style="white-space: pre-wrap;">{{ experiment.description or "—" }}</p>
+    </div>
+
+    <!-- Documents -->
+    <div class="card card-body">
+      <h5 class="mb-2">Documents</h5>
+      <ul class="list-group mb-3">
+        {% for d in experiment.documents %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>{{ d.filename }}</span>
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('download', doc_id=d.id) }}">Download</a>
+          </li>
+        {% else %}
+          <li class="list-group-item">No documents uploaded.</li>
+        {% endfor %}
+      </ul>
+
+      <form method="post" action="{{ url_for('upload_document', experiment_id=experiment.id) }}" enctype="multipart/form-data">
+        <div class="input-group">
+          <input type="file" class="form-control" name="file" required>
+          <button class="btn btn-primary">Upload</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Linked Samples -->
+  <div class="col-lg-6">
+    <div class="card card-body">
+      <h5 class="mb-2">Linked Samples</h5>
+      <ul class="list-group">
+        {% for link in experiment.sample_links %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <div>
+              <a href="{{ url_for('view_sample', sample_id=link.sample.id) }}">{{ link.sample.name }}</a>
+              <div class="small text-muted">
+                role: {{ link.role }}{% if link.notes %} · {{ link.notes }}{% endif %}
+              </div>
+            </div>
+          </li>
+        {% else %}
+          <li class="list-group-item">No samples linked yet.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</div>
+
 {% endblock %}

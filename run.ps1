@@ -1,12 +1,15 @@
 # run.ps1 - One-shot launcher for Windows PowerShell (5.1+)
 # - Creates a venv if missing
-# - Quietly checks/installs dependencies with a minimal checklist
-# - Runs app.py using the venv's python (no activation needed)
+# - Checks/installs dependencies with a minimal checklist
+# - Shows pip details only when an install fails
+# - Runs app.py using the venv's python
 
 param(
     [string]$VenvDir = "venv",
     [string]$BindHost = "127.0.0.1",
-    [int]$Port = 5000
+    [int]$Port = 5000,
+    # Optional override if your requirements file lives elsewhere
+    [string]$Requirements = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,11 +18,7 @@ function Ensure-Venv {
     $venvPyPath = Join-Path $VenvDir "Scripts/python.exe"
     if (-not (Test-Path -Path $venvPyPath)) {
         Write-Host ("Creating virtual environment in '{0}'..." -f $VenvDir)
-        try {
-            py -3 -m venv $VenvDir
-        } catch {
-            python -m venv $VenvDir
-        }
+        try { py -3 -m venv $VenvDir } catch { python -m venv $VenvDir }
     } else {
         Write-Host ("Virtual environment found at '{0}'." -f $VenvDir)
     }
@@ -28,8 +27,24 @@ function Ensure-Venv {
 function Upgrade-Pip {
     $venvPy = Join-Path $VenvDir "Scripts/python.exe"
     Write-Host "Upgrading pip (quiet)..."
-    & $venvPy -m pip install --upgrade pip *> $null
+    & $venvPy -m pip install --upgrade pip --quiet *> $null
 }
+
+function Resolve-RequirementsPath {
+    param([string]$Override)
+    if ($Override -and (Test-Path -Path $Override)) { return $Override }
+
+    $candidates = @(
+        "requirements.txt",              # dev portable
+        "requirements/requirements.txt", # alt dev location
+        "requirements-lock.txt"          # pinned freeze
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path -Path $c) { return $c }
+    }
+    return $null
+}
+
 
 function Get-ModuleNameFromRequirement([string]$req) {
     # Strip comments and whitespace
@@ -50,53 +65,74 @@ function Get-ModuleNameFromRequirement([string]$req) {
     }
 }
 
-function Install-Requirements-Checklist {
-    $venvPy = Join-Path $VenvDir "Scripts/python.exe"
+function Test-PythonModule {
+    param(
+        [string]$PythonExe,
+        [string]$ModuleName
+    )
+    # Return $true if importable, $false otherwise; never throw.
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & $PythonExe -c "import importlib,sys; sys.exit(0) if importlib.util.find_spec('$ModuleName') else sys.exit(1)" *> $null
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+    return ($code -eq 0)
+}
 
-    if (-not (Test-Path -Path "requirements.txt")) {
-        Write-Host "No requirements.txt found; skipping dependency check."
+function Install-Requirements-Checklist {
+    param(
+        [string]$venvPy,
+        [string]$reqFile
+    )
+
+    if (-not $reqFile -or -not (Test-Path -Path $reqFile)) {
+        Write-Host "No requirements file found; skipping dependency check."
         return
     }
 
-    Write-Host "Checking dependencies..."
-    $lines = Get-Content "requirements.txt"
+    Write-Host ("Checking dependencies from {0}..." -f $reqFile)
+    $lines = Get-Content $reqFile | Where-Object { $_ -and ($_ -notmatch '^\s*#') }
 
-    foreach ($raw in $lines) {
-        $info = Get-ModuleNameFromRequirement $raw
-        if ($null -eq $info) { continue }
+    foreach ($req in $lines) {
+        $parsed = Get-ModuleNameFromRequirement $req
+        if (-not $parsed) { continue }
 
-        $req    = $info.Requirement
-        $module = $info.Module
+        $module = $parsed.Module
+        $requirement = $parsed.Requirement
 
-        # Try import in the venv
-        & $venvPy -c "import $module" 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host ('[OK] {0}' -f $req)
-            continue
-        }
-
-        Write-Host ('[..] {0} (installing...)' -f $req)
-        & $venvPy -m pip install $req *> $null
-
-        # Re-check
-        & $venvPy -c "import $module" 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host ('[OK] {0} (now installed)' -f $req)
+        if (Test-PythonModule -PythonExe $venvPy -ModuleName $module) {
+            Write-Host ("[OK] {0}" -f $requirement) -ForegroundColor Green
         } else {
-            Write-Host ('[!!] {0} (install failed)' -f $req)
-            throw ('Failed to install requirement: {0}' -f $req)
+            Write-Host ("[..] {0} (installing...)" -f $requirement) -ForegroundColor Yellow
+            try {
+                & $venvPy -m pip install $requirement
+                if ($LASTEXITCODE -eq 0 -and (Test-PythonModule -PythonExe $venvPy -ModuleName $module)) {
+                    Write-Host ("[OK] {0}" -f $requirement) -ForegroundColor Green
+                } else {
+                    Write-Host ("[!!] {0} (install failed)" -f $requirement) -ForegroundColor Red
+                }
+            } catch {
+                Write-Host ("[!!] {0} (error: {1})" -f $requirement, $_.Exception.Message) -ForegroundColor Red
+            }
         }
     }
 }
 
-function Run-App {
-    $venvPy = Join-Path $VenvDir "Scripts/python.exe"
-    $args = @("app.py", "--host=$BindHost", "--port=$Port")
-    Write-Host ("Starting app: {0} {1}" -f $venvPy, ($args -join ' '))
-    & $venvPy @args
-}
+# --- Main Execution ---
 
+# 1. Ensure venv exists
 Ensure-Venv
+
+# 2. Path to venv's python
+$venvPy = Join-Path $VenvDir "Scripts/python.exe"
+
+# 3. Upgrade pip quietly
 Upgrade-Pip
-Install-Requirements-Checklist
-Run-App
+
+# 4. Resolve requirements and install/check them
+$reqFile = Resolve-RequirementsPath -Override $Requirements
+Install-Requirements-Checklist -venvPy $venvPy -reqFile $reqFile
+
+# 5. Finally, run your app
+Write-Host "Launching app.py..."
+& $venvPy app.py --host $BindHost --port $Port

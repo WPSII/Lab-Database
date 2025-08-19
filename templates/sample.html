@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block content %}
+
+<p class="mb-3">
+  <a href="{{ url_for('list_samples') }}">&larr; Back to samples</a>
+  · Project: <a href="{{ url_for('view_project', project_id=sample.project.id) }}">{{ sample.project.title }}</a>
+</p>
+
+<!-- Lineage / breadcrumbs -->
+<p class="small text-muted">
+  Lineage:
+  {% for ancestor in lineage %}
+    <a href="{{ url_for('view_sample', sample_id=ancestor.id) }}">{{ ancestor.name }}</a> &raquo;
+  {% endfor %}
+  <strong>{{ sample.name }}</strong>
+</p>
+
+
+<h2 class="mb-1">{{ sample.name }}</h2>
+<div class="text-muted mb-3">Created {{ sample.created_at.strftime('%Y-%m-%d') }}</div>
+
+<div class="row g-3">
+  <div class="col-lg-6">
+
+    <!-- Details -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Details</h5>
+      <dl class="row mb-0">
+        <dt class="col-4">Manufacturer</dt><dd class="col-8">{{ sample.manufacturer or "—" }}</dd>
+        <dt class="col-4">Composition</dt><dd class="col-8"><pre class="mb-0" style="white-space: pre-wrap;">{{ sample.composition or "—" }}</pre></dd>
+        <dt class="col-4">Notes</dt><dd class="col-8"><pre class="mb-0" style="white-space: pre-wrap;">{{ sample.notes or "—" }}</pre></dd>
+      </dl>
+    </div>
+
+    <!-- Link Experiment -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Link Experiment</h5>
+      <form method="post" action="{{ url_for('link_experiment', sample_id=sample.id) }}">
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label">Experiment</label>
+            <select class="form-select" name="experiment_id" required>
+              <option value="">Select...</option>
+              {% for e in exp_choices %}
+                <option value="{{ e.id }}">{{ e.title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Role</label>
+            <select class="form-select" name="role">
+              <option value="irradiation">irradiation</option>
+              <option value="corrosion">corrosion</option>
+              <option value="polishing">polishing</option>
+              <option value="other" selected>other</option>
+            </select>
+          </div>
+        </div>
+        <div class="mt-2">
+          <label class="form-label">Notes (optional)</label>
+          <input class="form-control" name="notes" placeholder="e.g., fluence/temp/dpa; media; etc.">
+        </div>
+        <div class="mt-3">
+          <button class="btn btn-primary">Add Link</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Manufacturer / Supporting Docs -->
+    <div class="card card-body">
+      <h5 class="mb-2">Manufacturer / Supporting Docs</h5>
+      <ul class="list-group mb-3">
+        {% for d in sample.documents %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>{{ d.filename }}</span>
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('download_sample_doc', doc_id=d.id) }}">Download</a>
+          </li>
+        {% else %}
+          <li class="list-group-item">No documents uploaded.</li>
+        {% endfor %}
+      </ul>
+      <form method="post" action="{{ url_for('upload_sample_doc', sample_id=sample.id) }}" enctype="multipart/form-data">
+        <div class="input-group">
+          <input type="file" class="form-control" name="file" required>
+          <button class="btn btn-primary">Upload</button>
+        </div>
+      </form>
+    </div>
+
+  </div>
+
+  <div class="col-lg-6">
+    <!-- Linked Experiments -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Linked Experiments</h5>
+      <ul class="list-group">
+        {% for link in sample.experiment_links %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <div>
+              <a href="{{ url_for('view_experiment', experiment_id=link.experiment.id) }}">{{ link.experiment.title }}</a>
+              <div class="small text-muted">{{ link.role }}{% if link.notes %} · {{ link.notes }}{% endif %}</div>
+            </div>
+            <form method="post" action="{{ url_for('unlink_experiment', link_id=link.id) }}" onsubmit="return confirm('Remove this link?');">
+              <button class="btn btn-sm btn-outline-danger">Remove</button>
+            </form>
+          </li>
+        {% else %}
+          <li class="list-group-item">No experiments linked yet.</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <!-- Child Samples -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Child Samples</h5>
+      <ul class="list-group">
+        {% for c in sample.children %}
+          <li class="list-group-item"><a href="{{ url_for('view_sample', sample_id=c.id) }}">{{ c.name }}</a></li>
+        {% else %}
+          <li class="list-group-item">No child samples.</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <!-- Split form -->
+    <div class="card card-body">
+      <h5 class="mb-2">Split Sample (create child)</h5>
+      <form method="post" action="{{ url_for('split_sample', sample_id=sample.id) }}">
+        <div class="mb-2">
+          <label class="form-label">Child Name</label>
+          <input class="form-control" name="name" required placeholder="e.g., {{ sample.name }} - cut B">
+        </div>
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label">Manufacturer</label>
+            <input class="form-control" name="manufacturer" value="{{ sample.manufacturer or '' }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Composition</label>
+            <input class="form-control" name="composition" value="{{ sample.composition or '' }}">
+          </div>
+        </div>
+        <div class="mt-2">
+          <label class="form-label">Notes</label>
+          <input class="form-control" name="notes" placeholder="optional">
+        </div>
+        <div class="mt-3">
+          <button class="btn btn-primary">Create Child</button>
+        </div>
+      </form>
+    </div>
+
+  </div>
+</div>
+
+
+{% endblock %}

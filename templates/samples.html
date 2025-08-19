@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2>Samples</h2>
+  <div class="d-flex align-items-center gap-2">
+    <form class="d-flex" method="get" action="{{ url_for('list_samples') }}">
+      <input type="hidden" name="view" value="{{ view }}">
+      <input class="form-control me-2" name="q" value="{{ q or '' }}" placeholder="Search samples...">
+      <button class="btn btn-outline-secondary">Search</button>
+    </form>
+    <div class="btn-group">
+      <a class="btn btn-sm {% if view != 'project' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+         href="{{ url_for('list_samples', view='flat', q=q) }}">Flat</a>
+      <a class="btn btn-sm {% if view == 'project' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+         href="{{ url_for('list_samples', view='project', q=q) }}">By Project</a>
+    </div>
+  </div>
+</div>
+
+{% if view == 'flat' %}
+  <ul class="list-group mb-4">
+    {% for s in samples %}
+      <li class="list-group-item d-flex justify-content-between align-items-center">
+        <div>
+          <a href="{{ url_for('view_sample', sample_id=s.id) }}">{{ s.name }}</a>
+          <div class="small text-muted">
+            Project: <a href="{{ url_for('view_project', project_id=s.project.id) }}">{{ s.project.title }}</a>
+            {% if s.manufacturer %} · {{ s.manufacturer }}{% endif %}
+            · {{ s.experiment_links | length }} linked experiment{% if (s.experiment_links | length) != 1 %}s{% endif %}
+          </div>
+        </div>
+        <small class="text-muted">{{ s.created_at.strftime('%Y-%m-%d') }}</small>
+      </li>
+    {% else %}
+      <li class="list-group-item">No samples yet.</li>
+    {% endfor %}
+  </ul>
+{% else %}
+  {# --- Project tree view with recursion --- #}
+  {% macro render_tree(node) -%}
+    <li>
+      <a href="{{ url_for('view_sample', sample_id=node.id) }}">{{ node.name }}</a>
+      {% if node.children %}
+        <ul>
+          {% for c in node.children %}
+            {{ render_tree(c) }}
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </li>
+  {%- endmacro %}
+
+  {% for p in projects %}
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">
+        <a href="{{ url_for('view_project', project_id=p.id) }}">{{ p.title }}</a>
+      </h5>
+      {% set roots = roots_by_project.get(p.id, []) %}
+      {% if roots %}
+        <ul class="mb-0">
+          {% for r in roots %}
+            {{ render_tree(r) }}
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-muted mb-0">No samples in this project.</p>
+      {% endif %}
+    </div>
+  {% endfor %}
+{% endif %}
+
+<!-- Create Sample -->
+<div class="card card-body" style="max-width: 900px;">
+  <h5 class="mb-3">Create Sample</h5>
+  <form method="post" action="{{ url_for('create_sample') }}">
+    <div class="row g-2">
+      <div class="col-md-4">
+        <label class="form-label">Project</label>
+        <select class="form-select" id="project-select" name="project_id" required>
+          <option value="">Select a project…</option>
+          {% for p in projects %}
+            <option value="{{ p.id }}">{{ p.title }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Parent Sample (optional)</label>
+        <select class="form-select" id="parent-select" name="parent_id" disabled>
+          <option value="">Select a project first…</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Sample Name</label>
+        <input class="form-control" name="name" required placeholder="e.g., SS316H Heat A">
+      </div>
+    </div>
+
+    <div class="row g-2 mt-2">
+      <div class="col-md-6">
+        <label class="form-label">Manufacturer</label>
+        <input class="form-control" name="manufacturer" placeholder="e.g., Goodfellow">
+      </div>
+      <div class="col-md-6">
+        <label class="form-label">Composition</label>
+        <input class="form-control" name="composition" placeholder="Fe 70%, Cr 18%, Ni 10%">
+      </div>
+    </div>
+
+    <div class="row g-2 mt-2">
+      <div class="col-md-8">
+        <label class="form-label">Experiment (optional)</label>
+        <select class="form-select" id="experiment-select" name="experiment_id" disabled>
+          <option value="">Select a project first…</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">Role</label>
+        <select class="form-select" name="role">
+          <option value="irradiation">irradiation</option>
+          <option value="corrosion">corrosion</option>
+          <option value="polishing">polishing</option>
+          <option value="other" selected>other</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="mt-2">
+      <label class="form-label">Notes</label>
+      <textarea class="form-control" name="notes" rows="3" placeholder="Any extra attributes or JSON-like notes"></textarea>
+    </div>
+
+    <div class="mt-3">
+      <button class="btn btn-primary">Create Sample</button>
+    </div>
+  </form>
+</div>
+
+<!-- Data for dependent dropdowns -->
+<script id="exp-data" type="application/json">{{ experiment_opts | tojson }}</script>
+<script id="sample-data" type="application/json">{{ sample_opts | tojson }}</script>
+<script>
+(function() {
+  const expData = JSON.parse(document.getElementById('exp-data').textContent || '[]');
+  const sampleData = JSON.parse(document.getElementById('sample-data').textContent || '[]');
+
+  const projSel = document.getElementById('project-select');
+  const expSel  = document.getElementById('experiment-select');
+  const parentSel = document.getElementById('parent-select');
+
+  function resetSel(sel, placeholder) {
+    sel.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = placeholder;
+    sel.appendChild(opt);
+  }
+
+  projSel.addEventListener('change', function() {
+    const pid = parseInt(this.value, 10);
+
+    // Experiments
+    if (!pid) {
+      expSel.disabled = true;
+      resetSel(expSel, 'Select a project first…');
+    } else {
+      const exps = expData.filter(e => e.project_id === pid);
+      expSel.disabled = false;
+      resetSel(expSel, '(optional) Select an experiment…');
+      exps.forEach(e => {
+        const opt = document.createElement('option');
+        opt.value = e.id;
+        opt.textContent = e.title;
+        expSel.appendChild(opt);
+      });
+    }
+
+    // Parent samples
+    if (!pid) {
+      parentSel.disabled = true;
+      resetSel(parentSel, 'Select a project first…');
+    } else {
+      const sams = sampleData.filter(s => s.project_id === pid);
+      parentSel.disabled = false;
+      resetSel(parentSel, '(optional) Select a parent…');
+      sams.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.id;
+        opt.textContent = s.name;
+        parentSel.appendChild(opt);
+      });
+    }
+  });
+})();
+</script>
+
+{% endblock %}
