@@ -109,6 +109,20 @@
         {% endfor %}
       </ul>
     </div>
+    <div class="card card-body mb-3">
+        <h5 class="mb-2">Attributes (Project-defined)</h5>
+        <dl class="row mb-0">
+            {% set vals = sample.attribute_values %}
+            {% if vals %}
+                % for v in vals %}
+                    <dt class="col-4">{{ v.attribute.name }}</dt>
+                    <dd class="col-8">{{ v.value or "—" }}</dd>
+                {% endfor %}
+            {% else %}
+                <dt class="col-12 text-muted">No attributes saved for this sample.</dt>
+            {% endif %}
+        </dl>
+    </div>
 
     <!-- Child Samples -->
     <div class="card card-body mb-3">

@@ -3,6 +3,8 @@ from datetime import datetime
 from flask import Flask, request, redirect, url_for, render_template, send_from_directory, flash
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
+from flask import jsonify
+import json
 
 # --- Config ---
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -104,6 +106,30 @@ class SampleExperiment(db.Model):
         "Experiment", backref=db.backref("sample_links", cascade="all, delete-orphan")
     )
 
+# --- Project-defined Sample Attributes ---
+
+class ProjectSampleAttribute(db.Model):
+    __tablename__ = "project_sample_attribute"
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=False)
+    name = db.Column(db.String(100), nullable=False)          # e.g., "Alloy", "Thickness", "Role"
+    field_type = db.Column(db.String(20), default="text")     # "text", "number", "select", "date"
+    required = db.Column(db.Boolean, default=False)
+    choices_json = db.Column(db.Text)                         # JSON array string for select choices (optional)
+    sort_order = db.Column(db.Integer, default=0)
+
+    project = db.relationship("Project", backref=db.backref("sample_attributes", cascade="all, delete-orphan"))
+
+class SampleAttributeValue(db.Model):
+    __tablename__ = "sample_attribute_value"
+    id = db.Column(db.Integer, primary_key=True)
+    sample_id = db.Column(db.Integer, db.ForeignKey("sample.id"), nullable=False)
+    attribute_id = db.Column(db.Integer, db.ForeignKey("project_sample_attribute.id"), nullable=False)
+    value = db.Column(db.Text)
+
+    sample = db.relationship("Sample", backref=db.backref("attribute_values", cascade="all, delete-orphan"))
+    attribute = db.relationship("ProjectSampleAttribute")
+
 
 # --- Helpers ---
 def allowed_file(fn: str) -> bool:
@@ -184,6 +210,11 @@ def build_linked_sample_tree(experiment):
     roots.sort(key=lambda n: (n["sample"].name or "").lower())
     return roots
 
+def get_project_attrs(project_id: int):
+    return (ProjectSampleAttribute.query
+            .filter_by(project_id=project_id)
+            .order_by(ProjectSampleAttribute.sort_order.asc(), ProjectSampleAttribute.id.asc())
+            .all())
 
 # --- Routes ---
 @app.route("/")
@@ -191,6 +222,61 @@ def index():
     projects = Project.query.order_by(Project.created_at.desc()).all()
     return render_template("index.html", projects=projects)  # expects {{ projects }}
 
+# ---- Sample Attributes ----
+@app.route("/project/<int:project_id>/sample-attrs/add", methods=["POST"])
+def add_sample_attribute(project_id):
+    p = Project.query.get_or_404(project_id)
+    name = (request.form.get("name") or "").strip()
+    field_type = (request.form.get("field_type") or "text").strip().lower()
+    required = bool(request.form.get("required"))
+    sort_order = request.form.get("sort_order", type=int)
+    choices = (request.form.get("choices") or "").strip()
+
+    if not name:
+        flash("Attribute name is required.", "error")
+        return redirect(url_for("view_project", project_id=p.id))
+
+    if field_type not in {"text","number","select","date"}:
+        flash("Invalid field type.", "error")
+        return redirect(url_for("view_project", project_id=p.id))
+
+    choices_json = None
+    if field_type == "select":
+        opts = [c.strip() for c in choices.split(",") if c.strip()]
+        if not opts:
+            flash("Select fields need at least one choice.", "error")
+            return redirect(url_for("view_project", project_id=p.id))
+        choices_json = json.dumps(opts)
+
+    attr = ProjectSampleAttribute(
+        project_id=p.id, name=name, field_type=field_type, required=required,
+        choices_json=choices_json, sort_order=sort_order or 0
+    )
+    db.session.add(attr); db.session.commit()
+    flash("Sample attribute added.", "ok")
+    return redirect(url_for("view_project", project_id=p.id))
+
+
+@app.route("/project/sample-attrs/<int:attr_id>/delete", methods=["POST"])
+def delete_sample_attribute(attr_id):
+    attr = ProjectSampleAttribute.query.get_or_404(attr_id)
+    pid = attr.project_id
+    db.session.delete(attr); db.session.commit()
+    flash("Attribute removed.", "ok")
+    return redirect(url_for("view_project", project_id=pid))
+
+@app.route("/api/project/<int:project_id>/sample-attrs")
+def api_project_sample_attrs(project_id):
+    attrs = get_project_attrs(project_id)
+    def serialize(a: ProjectSampleAttribute):
+        return {
+            "id": a.id,
+            "name": a.name,
+            "field_type": a.field_type,
+            "required": bool(a.required),
+            "choices": (json.loads(a.choices_json) if a.choices_json else []),
+        }
+    return jsonify([serialize(a) for a in attrs])
 
 # ---- Projects ----
 @app.route("/projects/create", methods=["POST"])
@@ -397,8 +483,7 @@ def list_samples():
 
 @app.route("/samples/create", methods=["POST"])
 def create_sample():
-    # either project_id is chosen OR parent_id is chosen (parent wins)
-    parent_id = request.form.get("parent_id", type=int)
+    parent_id = request.form.get("parent_id", type=int)  # if you kept parent feature
     project_id = request.form.get("project_id", type=int)
     name = request.form.get("name","").strip()
     manufacturer = request.form.get("manufacturer","").strip()
@@ -409,28 +494,51 @@ def create_sample():
 
     parent = Sample.query.get(parent_id) if parent_id else None
     if parent:
-        project_id = parent.project_id  # enforce same project as parent
+        project_id = parent.project_id  # parent rules
 
     if not project_id or not name:
         flash("Project (or parent) and sample name are required.", "error")
         return redirect(url_for("list_samples"))
 
+    # Validate dynamic attributes
+    dyn_attrs = get_project_attrs(project_id)
+    dyn_values = {}
+    missing = []
+    for a in dyn_attrs:
+        key = f"attr_{a.id}"
+        val = request.form.get(key, "").strip()
+        if a.required and not val:
+            missing.append(a.name)
+        dyn_values[a.id] = val
+
+    if missing:
+        flash("Missing required attributes: " + ", ".join(missing), "error")
+        return redirect(url_for("list_samples", view=request.args.get("view","project")))
+
+    # Create sample
     sample = Sample(
         project_id=project_id,
         parent_id=parent.id if parent else None,
         name=name,
-        manufacturer=manufacturer or (parent.manufacturer if parent else None),
-        composition=composition or (parent.composition if parent else None),
+        manufacturer=manufacturer,
+        composition=composition,
         notes=notes,
     )
     db.session.add(sample); db.session.commit()
 
+    # Store dynamic attribute values
+    for attr_id, val in dyn_values.items():
+        db.session.add(SampleAttributeValue(sample_id=sample.id, attribute_id=attr_id, value=val))
+    db.session.commit()
+
+    # Optional: create experiment link on creation
     if experiment_id:
         db.session.add(SampleExperiment(sample_id=sample.id, experiment_id=experiment_id, role=role))
         db.session.commit()
 
     flash("Sample created.", "ok")
     return redirect(url_for("view_sample", sample_id=sample.id))
+
 
 @app.route("/sample/<int:sample_id>/split", methods=["POST"])
 def split_sample(sample_id):

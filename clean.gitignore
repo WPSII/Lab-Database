@@ -23,3 +23,5 @@ uploads/
 # OS-specific
 .DS_Store
 Thumbs.db
+
+lab.db
