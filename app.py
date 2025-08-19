@@ -5,6 +5,7 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 from flask import jsonify
 import json
+from datetime import datetime
 
 # --- Config ---
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -126,6 +127,9 @@ class SampleAttributeValue(db.Model):
     sample_id = db.Column(db.Integer, db.ForeignKey("sample.id"), nullable=False)
     attribute_id = db.Column(db.Integer, db.ForeignKey("project_sample_attribute.id"), nullable=False)
     value = db.Column(db.Text)
+    # NEW fields you added:
+    is_placeholder = db.Column(db.Boolean, default=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     sample = db.relationship("Sample", backref=db.backref("attribute_values", cascade="all, delete-orphan"))
     attribute = db.relationship("ProjectSampleAttribute")
@@ -216,6 +220,64 @@ def get_project_attrs(project_id: int):
             .order_by(ProjectSampleAttribute.sort_order.asc(), ProjectSampleAttribute.id.asc())
             .all())
 
+def get_full_experiment_chain(exp):
+    """Return [root ... selected] for the given experiment."""
+    chain = []
+    cur = exp
+    while cur:
+        chain.insert(0, cur)
+        cur = cur.parent  # requires Experiment.parent from your parent/child work
+    return chain
+
+def link_sample_to_experiment_with_lineage(sample, selected_exp, role="other", notes=""):
+    """
+    Create SampleExperiment links for the selected experiment AND all of its ancestors.
+    - Selected experiment gets the chosen role.
+    - Ancestors get role='ancestor' (so you can filter/display distinctly).
+    - Avoids duplicate links.
+    """
+    chain = get_full_experiment_chain(selected_exp)
+    for exp in chain:
+        role_here = role if exp.id == selected_exp.id else "ancestor"
+        exists = SampleExperiment.query.filter_by(
+            sample_id=sample.id, experiment_id=exp.id, role=role_here
+        ).first()
+        if not exists:
+            link_notes = notes if exp.id == selected_exp.id else (notes or f"via {selected_exp.title}")
+            db.session.add(SampleExperiment(
+                sample_id=sample.id,
+                experiment_id=exp.id,
+                role=role_here,
+                notes=link_notes
+            ))
+    db.session.commit()
+
+def get_sample_lineage(sample):
+    """Return [root, ..., sample]."""
+    chain = []
+    cur = sample
+    while cur:
+        chain.insert(0, cur)
+        cur = cur.parent
+    return chain
+
+def get_sample_root(sample):
+    cur = sample
+    while cur.parent is not None:
+        cur = cur.parent
+    return cur
+
+def serialize_sample_tree(node, current_id=None):
+    """Convert Sample tree to a dict usable by Jinja recursion."""
+    children = sorted(node.children, key=lambda s: (s.name or "").lower())
+    return {
+        "id": node.id,
+        "name": node.name,
+        "is_current": bool(current_id and node.id == current_id),
+        "children": [serialize_sample_tree(c, current_id) for c in children],
+    }
+
+
 # --- Routes ---
 @app.route("/")
 def index():
@@ -253,7 +315,26 @@ def add_sample_attribute(project_id):
         choices_json=choices_json, sort_order=sort_order or 0
     )
     db.session.add(attr); db.session.commit()
-    flash("Sample attribute added.", "ok")
+       
+    # Create placeholder values for all existing samples in this project
+    existing_sample_ids = [sid for (sid,) in db.session.query(Sample.id).filter_by(project_id=project_id)]
+    # which samples already have a value for this attr?
+    has_val_ids = {sid for (sid,) in db.session.query(SampleAttributeValue.sample_id)
+                   .filter_by(attribute_id=attr.id)}
+
+    created = 0
+    for sid in existing_sample_ids:
+        if sid not in has_val_ids:
+            db.session.add(SampleAttributeValue(
+                sample_id=sid,
+                attribute_id=attr.id,
+                value="PLEASE UPDATE",
+                is_placeholder=True
+            ))
+            created += 1
+    db.session.commit()
+
+    flash(f"Sample attribute added. {created} sample(s) marked as needing update.", "ok")
     return redirect(url_for("view_project", project_id=p.id))
 
 
@@ -261,9 +342,15 @@ def add_sample_attribute(project_id):
 def delete_sample_attribute(attr_id):
     attr = ProjectSampleAttribute.query.get_or_404(attr_id)
     pid = attr.project_id
-    db.session.delete(attr); db.session.commit()
-    flash("Attribute removed.", "ok")
+
+    # Delete all values for this attribute
+    deleted = SampleAttributeValue.query.filter_by(attribute_id=attr.id).delete(synchronize_session=False)
+    db.session.delete(attr)
+    db.session.commit()
+
+    flash(f"Attribute removed. {deleted} value(s) deleted from samples.", "ok")
     return redirect(url_for("view_project", project_id=pid))
+
 
 @app.route("/api/project/<int:project_id>/sample-attrs")
 def api_project_sample_attrs(project_id):
@@ -295,8 +382,13 @@ def create_project():
 @app.route("/project/<int:project_id>")
 def view_project(project_id):
     project = Project.query.get_or_404(project_id)
-    # template should use {{ project }}, and can iterate project.experiments and each exp.sample_links
-    return render_template("project.html", project=project)
+    roots = (Sample.query
+             .filter_by(project_id=project.id, parent_id=None)
+             .order_by(Sample.name.asc())
+             .all())
+    sample_tree = [serialize_sample_tree(r) for r in roots]  # current_id=None
+    return render_template("project.html", project=project, sample_tree=sample_tree)
+
 
 
 @app.route("/project/<int:project_id>/experiments/create", methods=["POST"])
@@ -483,98 +575,141 @@ def list_samples():
 
 @app.route("/samples/create", methods=["POST"])
 def create_sample():
-    parent_id = request.form.get("parent_id", type=int)  # if you kept parent feature
+    parent_id  = request.form.get("parent_id", type=int)
     project_id = request.form.get("project_id", type=int)
-    name = request.form.get("name","").strip()
-    manufacturer = request.form.get("manufacturer","").strip()
-    composition = request.form.get("composition","").strip()
-    notes = request.form.get("notes","").strip()
+    name       = (request.form.get("name") or "").strip()
+
+    # NEW: optional experiment link on creation
     experiment_id = request.form.get("experiment_id", type=int)
-    role = (request.form.get("role") or "other").strip().lower()
+    link_role     = (request.form.get("role") or "other").strip().lower()
+    link_notes    = (request.form.get("notes") or "").strip()
 
     parent = Sample.query.get(parent_id) if parent_id else None
     if parent:
-        project_id = parent.project_id  # parent rules
+        project_id = parent.project_id
 
     if not project_id or not name:
         flash("Project (or parent) and sample name are required.", "error")
         return redirect(url_for("list_samples"))
 
-    # Validate dynamic attributes
-    dyn_attrs = get_project_attrs(project_id)
-    dyn_values = {}
+    # validate dynamic attributes (your existing logic here) ...
+    attrs = get_project_attrs(project_id)
+    values_to_save = []
     missing = []
-    for a in dyn_attrs:
+    for a in attrs:
         key = f"attr_{a.id}"
-        val = request.form.get(key, "").strip()
+        val = (request.form.get(key) or "").strip()
         if a.required and not val:
             missing.append(a.name)
-        dyn_values[a.id] = val
-
+        values_to_save.append((a.id, val))
     if missing:
         flash("Missing required attributes: " + ", ".join(missing), "error")
         return redirect(url_for("list_samples", view=request.args.get("view","project")))
 
-    # Create sample
-    sample = Sample(
-        project_id=project_id,
-        parent_id=parent.id if parent else None,
-        name=name,
-        manufacturer=manufacturer,
-        composition=composition,
-        notes=notes,
-    )
+    # create the sample
+    sample = Sample(project_id=project_id, parent_id=(parent.id if parent else None), name=name)
     db.session.add(sample); db.session.commit()
 
-    # Store dynamic attribute values
-    for attr_id, val in dyn_values.items():
+    # persist attribute values
+    for attr_id, val in values_to_save:
         db.session.add(SampleAttributeValue(sample_id=sample.id, attribute_id=attr_id, value=val))
     db.session.commit()
 
-    # Optional: create experiment link on creation
+    # NEW: link to experiment + all ancestors (enforce same-project)
     if experiment_id:
-        db.session.add(SampleExperiment(sample_id=sample.id, experiment_id=experiment_id, role=role))
-        db.session.commit()
+        exp = Experiment.query.get_or_404(experiment_id)
+        if exp.project_id != project_id:
+            flash("Selected experiment must belong to the same project as the sample.", "error")
+        else:
+            link_sample_to_experiment_with_lineage(sample, exp, role=link_role, notes=link_notes)
 
     flash("Sample created.", "ok")
     return redirect(url_for("view_sample", sample_id=sample.id))
 
 
+
 @app.route("/sample/<int:sample_id>/split", methods=["POST"])
 def split_sample(sample_id):
     parent = Sample.query.get_or_404(sample_id)
-    name = (request.form.get("name") or "").strip()
-    if not name:
-        flash("Child sample name is required.", "error")
+    child_name = (request.form.get("name") or "").strip()
+
+    if not child_name:
+        flash("Child name is required.", "error")
         return redirect(url_for("view_sample", sample_id=parent.id))
 
-    manufacturer = request.form.get("manufacturer", parent.manufacturer)
-    composition = request.form.get("composition", parent.composition)
-    notes = request.form.get("notes","")
+    # Required attributes for the parent's project
+    attrs = get_project_attrs(parent.project_id)
 
+    missing = []
+    values = {}
+
+    for a in attrs:
+        key = f"attr_{a.id}"
+        val = (request.form.get(key) or "").strip()
+        if a.required and not val:
+            missing.append(a.name)
+        values[a.id] = val
+
+    if missing:
+        flash("Missing required attributes: " + ", ".join(missing), "error")
+        return redirect(url_for("view_sample", sample_id=parent.id))
+
+    # Create the child
     child = Sample(
         project_id=parent.project_id,
         parent_id=parent.id,
-        name=name,
-        manufacturer=manufacturer,
-        composition=composition,
-        notes=notes
+        name=child_name,
     )
     db.session.add(child); db.session.commit()
+
+    # Persist attribute values on the child
+    for attr_id, val in values.items():
+        db.session.add(SampleAttributeValue(sample_id=child.id, attribute_id=attr_id, value=val))
+    db.session.commit()
+
     flash("Child sample created.", "ok")
     return redirect(url_for("view_sample", sample_id=child.id))
+
 
 @app.route("/sample/<int:sample_id>")
 def view_sample(sample_id):
     sample = Sample.query.get_or_404(sample_id)
-    exp_choices = (Experiment.query
-                   .filter_by(project_id=sample.project_id)
-                   .order_by(Experiment.created_at.desc())
-                   .all())
-    lineage = build_lineage(sample)
-    return render_template("sample.html", sample=sample, exp_choices=exp_choices, lineage=lineage)
+    exp_choices = Experiment.query.filter_by(project_id=sample.project_id).order_by(Experiment.created_at.desc()).all()
 
+    # lineage & tree (if you already added them) ...
+    lineage = get_sample_lineage(sample)
 
+    # Build defs for display + editing
+    attrs = get_project_attrs(sample.project_id)
+    val_by_attr = {v.attribute_id: v for v in sample.attribute_values}
+
+    needs_update = 0
+    attr_defs = []
+    for a in attrs:
+        v = val_by_attr.get(a.id)
+        value = v.value if v else ""
+        placeholder = (v.is_placeholder if v else True) if value == "PLEASE UPDATE" or (not v) else bool(v.is_placeholder)
+        if (not v) or placeholder:
+            needs_update += 1
+        attr_defs.append({
+            "id": a.id,
+            "name": a.name,
+            "field_type": a.field_type,
+            "required": bool(a.required),
+            "choices": (json.loads(a.choices_json) if a.choices_json else []),
+            "value": value,
+            "is_placeholder": placeholder,
+        })
+
+    return render_template(
+        "sample.html",
+        sample=sample,
+        exp_choices=exp_choices,
+        lineage=lineage,
+        family_tree=serialize_sample_tree(get_sample_root(sample), sample.id),
+        attr_defs=attr_defs,
+        needs_update=needs_update,
+    )
 
 @app.route("/sample/<int:sample_id>/link", methods=["POST"])
 def link_experiment(sample_id):
@@ -655,6 +790,44 @@ def download_sample_doc(doc_id):
         as_attachment=True,
         download_name=d.filename,
     )
+
+@app.route("/sample/<int:sample_id>/edit", methods=["POST"])
+def edit_sample(sample_id):
+    sample = Sample.query.get_or_404(sample_id)
+    new_name = (request.form.get("name") or "").strip()
+    if new_name:
+        sample.name = new_name
+
+    attrs = get_project_attrs(sample.project_id)
+    existing = {v.attribute_id: v for v in sample.attribute_values}
+
+    missing_required = []
+    for a in attrs:
+        key = f"attr_{a.id}"
+        val = (request.form.get(key) or "").strip()
+
+        if a.required and not val:
+            missing_required.append(a.name)
+            continue
+
+        row = existing.get(a.id)
+        if row:
+            row.value = val
+            row.is_placeholder = False
+        else:
+            db.session.add(SampleAttributeValue(
+                sample_id=sample.id,
+                attribute_id=a.id,
+                value=val,
+                is_placeholder=False
+            ))
+    if missing_required:
+        flash("Missing required attributes: " + ", ".join(missing_required), "error")
+        return redirect(url_for("view_sample", sample_id=sample.id))
+
+    db.session.commit()
+    flash("Sample updated.", "ok")
+    return redirect(url_for("view_sample", sample_id=sample.id))
 
 
 # --- Bootstrap DB on first run ---

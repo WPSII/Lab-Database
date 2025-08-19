@@ -73,6 +73,29 @@
 <!-- Create Sample -->
 <div class="card card-body" style="max-width: 900px;">
   <h5 class="mb-3">Create Sample</h5>
+  <!-- (Place inside the Create Sample form) -->
+    <div class="row g-2 mt-2">
+        <div class="col-md-6">
+            <label class="form-label">Link Experiment (optional)</label>
+            <select class="form-select" id="experiment-select" name="experiment_id" disabled>
+                <option value="">Select a project first…</option>
+            </select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label">Role</label>
+            <select class="form-select" name="role">
+                <option value="irradiation">irradiation</option>
+                <option value="corrosion">corrosion</option>
+                <option value="polishing">polishing</option>
+                <option value="other" selected>other</option>
+            </select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label">Notes (optional)</label>
+            <input class="form-control" name="notes" placeholder="e.g., fluence/temp/media">
+        </div>
+    </div>
+
   <form method="post" action="{{ url_for('create_sample') }}">
     <div class="row g-2">
       <div class="col-md-4">
@@ -96,101 +119,138 @@
       </div>
     </div>
 
-    <div class="row g-2 mt-2">
-      <div class="col-md-6">
-        <label class="form-label">Manufacturer</label>
-        <input class="form-control" name="manufacturer" placeholder="e.g., Goodfellow">
+    <!-- Dynamic project-defined attributes -->
+    <div class="mt-3" id="dyn-attrs" style="display:none;">
+      <h6 class="mb-2">Project-required Attributes</h6>
+      <div id="dyn-attrs-fields"></div>
+      <div class="form-text">
+        These fields are defined by the project owner.
       </div>
-      <div class="col-md-6">
-        <label class="form-label">Composition</label>
-        <input class="form-control" name="composition" placeholder="Fe 70%, Cr 18%, Ni 10%">
-      </div>
-    </div>
-
-    <div class="row g-2 mt-2">
-      <div class="col-md-8">
-        <label class="form-label">Experiment (optional)</label>
-        <select class="form-select" id="experiment-select" name="experiment_id" disabled>
-          <option value="">Select a project first…</option>
-        </select>
-      </div>
-      <div class="col-md-4">
-        <label class="form-label">Role</label>
-        <select class="form-select" name="role">
-          <option value="irradiation">irradiation</option>
-          <option value="corrosion">corrosion</option>
-          <option value="polishing">polishing</option>
-          <option value="other" selected>other</option>
-        </select>
-      </div>
-    </div>
-
-    <div class="mt-2">
-      <label class="form-label">Notes</label>
-      <textarea class="form-control" name="notes" rows="3" placeholder="Any extra attributes or JSON-like notes"></textarea>
     </div>
 
     <div class="mt-3">
-      <button class="btn btn-primary">Create Sample</button>
+      <button class="btn btn-primary" id="create-btn" disabled>Create Sample</button>
     </div>
   </form>
 </div>
 
-<!-- Data for dependent dropdowns -->
-<script id="exp-data" type="application/json">{{ experiment_opts | tojson }}</script>
+<!-- ONE clean data block: parent candidate samples (id, name, project_id) -->
 <script id="sample-data" type="application/json">{{ sample_opts | tojson }}</script>
+
 <script>
-(function() {
-  const expData = JSON.parse(document.getElementById('exp-data').textContent || '[]');
-  const sampleData = JSON.parse(document.getElementById('sample-data').textContent || '[]');
-
-  const projSel = document.getElementById('project-select');
-  const expSel  = document.getElementById('experiment-select');
+(function(){
+  const projSel   = document.getElementById('project-select');
   const parentSel = document.getElementById('parent-select');
+  const wrap      = document.getElementById('dyn-attrs');
+  const container = document.getElementById('dyn-attrs-fields');
+  const createBtn = document.getElementById('create-btn');
 
-  function resetSel(sel, placeholder) {
+  // parse precomputed safe data from the server
+  let sampleData = [];
+  try { sampleData = JSON.parse(document.getElementById('sample-data').textContent || '[]'); }
+  catch(_) { sampleData = []; }
+
+  function resetSel(sel, placeholder){
     sel.innerHTML = '';
     const opt = document.createElement('option');
     opt.value = '';
-    opt.textContent = placeholder;
+    opt.textContent = placeholder || '';
     sel.appendChild(opt);
   }
 
-  projSel.addEventListener('change', function() {
-    const pid = parseInt(this.value, 10);
-
-    // Experiments
-    if (!pid) {
-      expSel.disabled = true;
-      resetSel(expSel, 'Select a project first…');
-    } else {
-      const exps = expData.filter(e => e.project_id === pid);
-      expSel.disabled = false;
-      resetSel(expSel, '(optional) Select an experiment…');
-      exps.forEach(e => {
-        const opt = document.createElement('option');
-        opt.value = e.id;
-        opt.textContent = e.title;
-        expSel.appendChild(opt);
-      });
-    }
-
-    // Parent samples
+  function populateParents(pid){
     if (!pid) {
       parentSel.disabled = true;
       resetSel(parentSel, 'Select a project first…');
-    } else {
-      const sams = sampleData.filter(s => s.project_id === pid);
-      parentSel.disabled = false;
-      resetSel(parentSel, '(optional) Select a parent…');
-      sams.forEach(s => {
-        const opt = document.createElement('option');
-        opt.value = s.id;
-        opt.textContent = s.name;
-        parentSel.appendChild(opt);
-      });
+      return;
     }
+    const sams = sampleData.filter(s => s.project_id === Number(pid));
+    parentSel.disabled = false;
+    resetSel(parentSel, '(optional) Select a parent…');
+    sams.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.name;
+      parentSel.appendChild(opt);
+    });
+  }
+
+  function clearDyn(){ container.innerHTML = ''; }
+  function toggleCreate(enabled){ createBtn.disabled = !enabled; }
+
+  async function loadAttrs(pid){
+    clearDyn();
+    if (!pid) { wrap.style.display = 'none'; toggleCreate(false); return; }
+    try {
+      const resp = await fetch(`/api/project/${pid}/sample-attrs`);
+      const attrs = await resp.json();
+
+      if (!attrs.length) {
+        wrap.style.display = 'none';
+        toggleCreate(true); // allow creation even if project has no attrs
+        return;
+      }
+
+      wrap.style.display = '';
+      attrs.forEach(a => {
+        const id = `attr_${a.id}`;
+        const group = document.createElement('div');
+        group.className = 'mb-2';
+
+        const label = document.createElement('label');
+        label.className = 'form-label';
+        label.setAttribute('for', id);
+        label.textContent = a.name + (a.required ? ' *' : '');
+
+        let input;
+        if (a.field_type === 'select') {
+          input = document.createElement('select');
+          input.className = 'form-select';
+          input.name = id; input.id = id;
+          if (!a.required) {
+            const opt = document.createElement('option'); opt.value = ''; opt.textContent = '(optional)';
+            input.appendChild(opt);
+          }
+          (a.choices || []).forEach(v => {
+            const opt = document.createElement('option'); opt.value = v; opt.textContent = v;
+            input.appendChild(opt);
+          });
+        } else {
+          input = document.createElement('input');
+          input.className = 'form-control';
+          input.name = id; input.id = id;
+          input.type = (a.field_type === 'number' ? 'number'
+                    :  a.field_type === 'date'   ? 'date' : 'text');
+          if (!a.required) input.placeholder = '(optional)';
+        }
+        if (a.required) input.required = true;
+
+        group.appendChild(label);
+        group.appendChild(input);
+        container.appendChild(group);
+      });
+
+      toggleCreate(true); // browser 'required' will enforce at submit
+    } catch (e) {
+      console.error('Failed to load project sample attributes', e);
+      wrap.style.display = 'none';
+      toggleCreate(false);
+    }
+  }
+
+  projSel.addEventListener('change', function(){
+    const pid = this.value;
+    populateParents(pid);
+    loadAttrs(pid);
   });
+
+  // prefill on reload if project already selected
+  if (projSel.value) {
+    populateParents(projSel.value);
+    loadAttrs(projSel.value);
+  } else {
+    toggleCreate(false);
+  }
 })();
 </script>
 

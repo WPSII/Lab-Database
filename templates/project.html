@@ -11,8 +11,36 @@
   <p class="mb-0" style="white-space: pre-wrap;">{{ project.description or "—" }}</p>
 </div>
 
+<div class="card card-body mb-3">
+  <h5 class="mb-2">Samples in this Project</h5>
+
+  {% macro render_sample_node(n) -%}
+    <li class="mb-1">
+      <a href="{{ url_for('view_sample', sample_id=n.id) }}">{{ n.name }}</a>
+      {% if n.children and n.children|length %}
+        <ul class="mt-1">
+          {% for c in n.children %}
+            {{ render_sample_node(c) }}
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </li>
+  {%- endmacro %}
+
+  {% if sample_tree and sample_tree|length %}
+    <ul class="mb-0">
+      {% for root in sample_tree %}
+        {{ render_sample_node(root) }}
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="text-muted mb-0">No samples in this project yet.</p>
+  {% endif %}
+</div>
+
+
 <div class="card card-body mb-4">
-  <h5 class="mb-2">Sample Attributes (required at creation)</h5>
+  <h5 class="mb-2">Sample Attributes</h5>
 
   <ul class="list-group mb-3">
     {% for a in project.sample_attributes|sort(attribute='sort_order') %}
