@@ -12,30 +12,30 @@
 </div>
 
 <h3 class="mb-2">Experiments</h3>
-{% for exp in project.experiments %}
-  <div class="card card-body mb-3">
-    <h5 class="mb-1">
-      <a href="{{ url_for('view_experiment', experiment_id=exp.id) }}">{{ exp.title }}</a>
-    </h5>
-    <div class="small text-muted mb-2">{{ exp.created_at.strftime('%Y-%m-%d') }}</div>
-    <p class="mb-2" style="white-space: pre-wrap;">{{ exp.description or "—" }}</p>
 
-    <strong>Samples</strong>
-    <ul class="mt-2">
-      {% for link in exp.sample_links %}
-        <li>
-          <a href="{{ url_for('view_sample', sample_id=link.sample.id) }}">{{ link.sample.name }}</a>
-          <span class="text-muted small">({{ link.role }})</span>
-          {% if link.notes %}<span class="text-muted small"> · {{ link.notes }}</span>{% endif %}
-        </li>
-      {% else %}
-        <li class="text-muted">No samples linked yet.</li>
-      {% endfor %}
-    </ul>
-  </div>
+{% macro render_exp(node) -%}
+  <li>
+    <a href="{{ url_for('view_experiment', experiment_id=node.id) }}">{{ node.title }}</a>
+    {% if node.children %}
+      <ul>
+        {% for c in node.children %}
+          {{ render_exp(c) }}
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </li>
+{%- endmacro %}
+
+{% set roots = project.experiments | selectattr('parent_id', 'equalto', None) | list %}
+{% if roots %}
+  <ul class="mb-3">
+    {% for r in roots %}
+      {{ render_exp(r) }}
+    {% endfor %}
+  </ul>
 {% else %}
   <p class="text-muted">No experiments for this project.</p>
-{% endfor %}
+{% endif %}
 
 <!-- (Optional) Quick-create Experiment -->
 <div class="card card-body mt-4" style="max-width: 720px;">

@@ -42,10 +42,16 @@ class Experiment(db.Model):
     description = db.Column(db.Text, default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    documents = db.relationship(
-        "Document", backref="experiment", cascade="all, delete-orphan"
+    # NEW: parent/children within the same table
+    parent_id = db.Column(db.Integer, db.ForeignKey("experiment.id"))
+    parent = db.relationship(
+        "Experiment",
+        remote_side=[id],
+        backref=db.backref("children", cascade="all, delete-orphan")
     )
-    # via backref on SampleExperiment: experiment.sample_links -> [SampleExperiment]
+
+    documents = db.relationship("Document", backref="experiment", cascade="all, delete-orphan")
+    # sample_links is via backref on SampleExperiment
 
 
 class Document(db.Model):
@@ -123,6 +129,62 @@ def build_lineage(sample):
         cur = cur.parent
     return chain
 
+def build_experiment_lineage(exp):
+    """Return list [root ... parent] for breadcrumb display."""
+    chain = []
+    cur = exp.parent
+    while cur:
+        chain.insert(0, cur)
+        cur = cur.parent
+    return chain
+
+def get_experiment_descendant_ids(exp):
+    """All descendant experiment IDs (to block cycles when reparenting)."""
+    seen = set()
+    stack = list(exp.children)
+    while stack:
+        node = stack.pop()
+        if node.id in seen:
+            continue
+        seen.add(node.id)
+        stack.extend(node.children)
+    return seen
+
+def build_linked_sample_tree(experiment):
+    """
+    Return a forest (list of roots) of linked samples organized by their
+    parent/child relations, but restricted to samples linked to this experiment.
+    Each node is: {"sample": Sample, "link": SampleExperiment, "children": [...]}
+    """
+    links = list(experiment.sample_links)  # SampleExperiment rows
+    nodes = {}
+
+    # make a node per linked sample
+    for link in links:
+        s = link.sample
+        nodes[s.id] = {"sample": s, "link": link, "children": []}
+
+    roots = []
+    # wire up parent/child within the linked set only
+    for node in nodes.values():
+        s = node["sample"]
+        if s.parent_id in nodes:
+            nodes[s.parent_id]["children"].append(node)
+        else:
+            roots.append(node)
+
+    # sort nicely
+    def sort_tree(n):
+        n["children"].sort(key=lambda x: (x["sample"].name or "").lower())
+        for c in n["children"]:
+            sort_tree(c)
+
+    for r in roots:
+        sort_tree(r)
+    roots.sort(key=lambda n: (n["sample"].name or "").lower())
+    return roots
+
+
 # --- Routes ---
 @app.route("/")
 def index():
@@ -169,9 +231,82 @@ def create_experiment(project_id):
 @app.route("/experiment/<int:experiment_id>")
 def view_experiment(experiment_id):
     experiment = Experiment.query.get_or_404(experiment_id)
-    # template should use {{ experiment }}, access experiment.sample_links to list linked samples
-    return render_template("experiment.html", experiment=experiment)
 
+    # lineage for breadcrumbs
+    lineage = build_experiment_lineage(experiment)
+
+    # possible new parents = same project, not self, not a descendant
+    candidates = (Experiment.query
+                  .filter_by(project_id=experiment.project_id)
+                  .order_by(Experiment.created_at.asc())
+                  .all())
+    desc_ids = get_experiment_descendant_ids(experiment)
+    parent_choices = [c for c in candidates if c.id != experiment.id and c.id not in desc_ids]
+    linked_sample_tree = build_linked_sample_tree(experiment)
+
+    return render_template(
+        "experiment.html",
+        experiment=experiment,
+        lineage=lineage,
+        parent_choices=parent_choices,
+        linked_sample_tree=linked_sample_tree
+    )
+
+@app.route("/experiment/<int:experiment_id>/split", methods=["POST"])
+def split_experiment(experiment_id):
+    parent = Experiment.query.get_or_404(experiment_id)
+    title = (request.form.get("title") or "").strip()
+    description = (request.form.get("description") or "").strip()
+
+    if not title:
+        flash("Child experiment title is required.", "error")
+        return redirect(url_for("view_experiment", experiment_id=parent.id))
+
+    child = Experiment(
+        project_id=parent.project_id,
+        parent_id=parent.id,
+        title=title,
+        description=description
+    )
+    db.session.add(child)
+    db.session.commit()
+    flash("Child experiment created.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=child.id))
+
+@app.route("/experiment/<int:experiment_id>/reparent", methods=["POST"])
+def reparent_experiment(experiment_id):
+    exp = Experiment.query.get_or_404(experiment_id)
+    new_parent_id = request.form.get("parent_id", type=int)
+
+    # Clear parent (make root)
+    if not new_parent_id:
+        exp.parent_id = None
+        db.session.commit()
+        flash("Parent cleared (experiment is now a root).", "ok")
+        return redirect(url_for("view_experiment", experiment_id=exp.id))
+
+    parent = Experiment.query.get_or_404(new_parent_id)
+
+    # Guardrails
+    if parent.id == exp.id:
+        flash("An experiment cannot be its own parent.", "error")
+        return redirect(url_for("view_experiment", experiment_id=exp.id))
+    if parent.project_id != exp.project_id:
+        flash("Parent must be in the same project.", "error")
+        return redirect(url_for("view_experiment", experiment_id=exp.id))
+
+    # Prevent cycles: walk up the ancestry
+    cur = parent
+    while cur:
+        if cur.id == exp.id:
+            flash("Invalid parent: would create a cycle.", "error")
+            return redirect(url_for("view_experiment", experiment_id=exp.id))
+        cur = cur.parent
+
+    exp.parent_id = parent.id
+    db.session.commit()
+    flash("Parent updated.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=exp.id))
 
 @app.route("/experiment/<int:experiment_id>/upload", methods=["POST"])
 def upload_document(experiment_id):
@@ -420,12 +555,11 @@ with app.app_context():
     db.create_all()
     from sqlalchemy import inspect, text
     insp = inspect(db.engine)
-    cols = [c["name"] for c in insp.get_columns("sample")]
+    cols = [c["name"] for c in insp.get_columns("experiment")]
     if "parent_id" not in cols:
-        # Adds column (FK constraint won’t be enforced by SQLite here, which is fine for dev)
         with db.engine.begin() as conn:
-            conn.execute(text("ALTER TABLE sample ADD COLUMN parent_id INTEGER"))
-
+            conn.execute(text("ALTER TABLE experiment ADD COLUMN parent_id INTEGER"))
+    
 
 if __name__ == "__main__":
     app.run(debug=True)
