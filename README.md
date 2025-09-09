@@ -26,7 +26,7 @@ cd Lab-Database
 On **Windows (PowerShell):**
 ```powershell
 .
-un.ps1
+run.ps1
 ```
 
 The script will:
