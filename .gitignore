@@ -8,7 +8,8 @@ __pycache__/
 venv/
 .myenv/
 .env/
-
+ENV/
+.venv/
 # SQLite database
 *.db
 
@@ -22,3 +23,5 @@ uploads/
 # OS-specific
 .DS_Store
 Thumbs.db
+
+lab.db

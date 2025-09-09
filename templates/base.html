@@ -1,21 +1,215 @@
 <!doctype html>
-<html>
+<html lang="en" data-bs-theme="auto">
 <head>
   <meta charset="utf-8">
-  <title>Lab DB</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or "Lab Database" }}</title>
+
+  <!-- Bootstrap 5 -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+
+  {% block head %}{% endblock %}
+
+  <style>
+    /* Small QoL tweaks */
+    .brand-compact { letter-spacing: .2px; }
+    .content-wrap   { padding-top: .75rem; padding-bottom: 2rem; }
+    .badge-pill     { border-radius: 9999px; }
+    .tree ul        { margin-left: 1.25rem; }
+    .tree li        { margin: .15rem 0; }
+    .nav-sep        { opacity:.25; margin: 0 .5rem; }
+    .navbar .btn-sm { --bs-btn-padding-y: .25rem; --bs-btn-padding-x: .5rem; }
+  </style>
 </head>
-<body class="p-4">
+<body>
+
+<!-- Top Navbar -->
+<nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom sticky-top">
   <div class="container">
-    <h1 class="mb-4"><a href="{{ url_for('index') }}" class="text-decoration-none">Lab Database</a></h1>
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        {% for cat,msg in messages %}
-          <div class="alert alert-{{ 'danger' if cat=='error' else 'success' }} py-2">{{ msg }}</div>
+    <a class="navbar-brand fw-semibold brand-compact" href="{{ url_for('index') }}">
+      Lab Database
+    </a>
+
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#topnav" aria-controls="topnav" aria-expanded="false" aria-label="Toggle navigation">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+
+    <div class="collapse navbar-collapse" id="topnav">
+      <!-- Left: primary nav -->
+      <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+        <li class="nav-item">
+          <a class="nav-link{% if request.endpoint == 'index' %} active{% endif %}" href="{{ url_for('index') }}">
+            Projects
+            {% if global_counts is defined and global_counts.projects is defined %}
+              <span class="badge text-bg-secondary ms-1 badge-pill">{{ global_counts.projects }}</span>
+            {% endif %}
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link{% if request.endpoint in ['list_samples','view_sample'] %} active{% endif %}" href="{{ url_for('list_samples') }}">
+            Samples
+            {% if global_counts is defined and global_counts.samples is defined %}
+              <span class="badge text-bg-secondary ms-1 badge-pill">{{ global_counts.samples }}</span>
+            {% endif %}
+          </a>
+        </li>
+        <li class="nav-item">
+          <span class="nav-link disabled">
+            Experiments
+            {% if global_counts is defined and global_counts.experiments is defined %}
+              <span class="badge text-bg-secondary ms-1 badge-pill">{{ global_counts.experiments }}</span>
+            {% endif %}
+          </span>
+        </li>
+      </ul>
+
+      <!-- Right: Search, New, Theme -->
+      <div class="d-flex align-items-center gap-2">
+
+        <!-- Global search (lands on Samples) -->
+        <form class="d-flex" role="search" method="get" action="{{ url_for('list_samples') }}">
+          <input class="form-control form-control-sm me-2" type="search" name="q" placeholder="Search samples…" aria-label="Search">
+          <button class="btn btn-sm btn-outline-secondary">Search</button>
+        </form>
+
+        <span class="nav-sep d-none d-lg-inline">|</span>
+
+        <!-- New dropdown -->
+        <div class="dropdown">
+          <button class="btn btn-sm btn-primary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+            New
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li><a class="dropdown-item" href="{{ url_for('index') }}#create-project">Project</a></li>
+            <li><a class="dropdown-item" href="{{ url_for('list_samples') }}#create-sample">Sample</a></li>
+            <li>
+              {% if project is defined %}
+                <a class="dropdown-item" href="{{ url_for('view_project', project_id=project.id) }}#create-experiment">
+                  Experiment (in {{ project.title }})
+                </a>
+              {% else %}
+                <a class="dropdown-item disabled" href="#" tabindex="-1" aria-disabled="true">Experiment (open a project)</a>
+              {% endif %}
+            </li>
+          </ul>
+        </div>
+
+        <!-- Theme toggle -->
+        <div class="dropdown">
+          <button class="btn btn-sm btn-outline-secondary dropdown-toggle d-flex align-items-center" type="button" data-bs-toggle="dropdown" aria-expanded="false" id="themeDropdown">
+            <span class="me-1" id="themeIcon" aria-hidden="true">🌓</span>
+            <span id="themeLabel">Theme</span>
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="themeDropdown">
+            <li><button class="dropdown-item d-flex justify-content-between" type="button" data-theme="auto">Auto <span>🌓</span></button></li>
+            <li><button class="dropdown-item d-flex justify-content-between" type="button" data-theme="light">Light <span>🌤️</span></button></li>
+            <li><button class="dropdown-item d-flex justify-content-between" type="button" data-theme="dark">Dark <span>🌙</span></button></li>
+          </ul>
+        </div>
+
+        {% if current_user.is_authenticated %}
+          <div class="dropdown">
+            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">
+              {{ current_user.name or current_user.email }}
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end">
+              <li><span class="dropdown-item-text small text-muted">{{ current_user.email }}</span></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item" href="{{ url_for('logout') }}">Sign out</a></li>
+            </ul>
+          </div>
+        {% else %}
+          <a class="btn btn-sm btn-outline-primary" href="{{ url_for('login') }}">Sign in</a>
+        {% endif %}
+
+
+      </div>
+    </div>
+  </div>
+</nav>
+
+<!-- Flash messages -->
+<div class="container">
+  <div class="pt-3">
+    {% with msgs = get_flashed_messages(with_categories=true) %}
+      {% if msgs %}
+        {% for category, message in msgs %}
+          {% set level = 'info' %}
+          {% if category in ['ok','success'] %}{% set level = 'success' %}{% endif %}
+          {% if category in ['error','danger'] %}{% set level = 'danger' %}{% endif %}
+          {% if category == 'warning' %}{% set level = 'warning' %}{% endif %}
+          <div class="alert alert-{{ level }} alert-dismissible fade show" role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+          </div>
         {% endfor %}
       {% endif %}
     {% endwith %}
-    {% block content %}{% endblock %}
   </div>
+</div>
+
+<!-- Page content -->
+<main class="container content-wrap">
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="container border-top pt-3 pb-4 small text-muted">
+  <div class="d-flex justify-content-between align-items-center">
+    <span>Lab Database</span>
+    <span>Flask · Bootstrap 5</span>
+  </div>
+</footer>
+
+<!-- Bootstrap JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+/* ===== Theme handling (auto / light / dark) ===== */
+(function() {
+  const key = 'theme';
+  const media = window.matchMedia('(prefers-color-scheme: dark)');
+  const html = document.documentElement;
+  const icon = document.getElementById('themeIcon');
+  const label = document.getElementById('themeLabel');
+
+  function iconFor(mode) {
+    if (mode === 'light') return '🌤️';
+    if (mode === 'dark')  return '🌙';
+    return '🌓';
+  }
+  function textFor(mode) {
+    if (mode === 'light') return 'Light';
+    if (mode === 'dark')  return 'Dark';
+    return 'Auto';
+  }
+  function apply(mode) {
+    if (mode === 'auto') {
+      html.setAttribute('data-bs-theme', media.matches ? 'dark' : 'light');
+    } else {
+      html.setAttribute('data-bs-theme', mode);
+    }
+    localStorage.setItem(key, mode);
+    if (icon)  icon.textContent  = iconFor(mode);
+    if (label) label.textContent = 'Theme';
+  }
+
+  // init
+  apply(localStorage.getItem(key) || 'auto');
+
+  // react to OS change in auto mode
+  media.addEventListener('change', function() {
+    if ((localStorage.getItem(key) || 'auto') === 'auto') apply('auto');
+  });
+
+  // menu
+  document.querySelectorAll('[data-theme]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      apply(btn.getAttribute('data-theme'));
+    });
+  });
+})();
+</script>
+
+{% block scripts %}{% endblock %}
 </body>
 </html>

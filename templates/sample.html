@@ -1,0 +1,316 @@
+{% extends "base.html" %}
+{% block content %}
+
+<p class="mb-3">
+  <a href="{{ url_for('list_samples') }}">&larr; Back to samples</a>
+</p>
+<div class="text-muted mb-2">
+  Created {{ sample.created_at.strftime('%Y-%m-%d') }}
+  {% if sample.creator %}by {{ sample.creator.name or sample.creator.email }}{% endif %}
+</div>
+
+<div class="d-flex flex-wrap align-items-start gap-3 mb-3">
+  <div class="flex-grow-1">
+    <h2 class="mb-1">{{ sample.name }}</h2>
+    <div class="text-muted">
+      Project:
+      <a href="{{ url_for('view_project', project_id=sample.project.id) }}">{{ sample.project.title }}</a>
+      &middot; Created {{ sample.created_at.strftime('%Y-%m-%d') }}
+    </div>
+  </div>
+
+  <div class="card card-body p-2" style="max-width:220px;">
+    <div class="fw-semibold small mb-1 text-center">QR Code</div>
+    <img src="{{ url_for('sample_qr', sample_id=sample.id) }}"
+         alt="QR for {{ sample.name }}"
+         class="img-fluid"
+         style="max-width:200px;">
+    <div class="form-text text-center">Scan to open this sample.</div>
+  </div>
+</div>
+
+{% if needs_update and needs_update > 0 %}
+  <div class="alert alert-warning d-flex align-items-center" role="alert">
+    <div>
+      This sample has <strong>{{ needs_update }}</strong> attribute{{ 's' if needs_update != 1 else '' }} needing update.
+      Use the <a href="#edit-sample">Edit Sample</a> form below.
+    </div>
+  </div>
+{% endif %}
+
+<!-- Family tree -->
+<div class="card card-body mb-3">
+  <h5 class="mb-2">Sample Family Tree</h5>
+
+  {% if lineage and lineage|length %}
+    <div class="small text-muted mb-2">
+      Path:
+      {% for n in lineage %}
+        {% if n.id == sample.id %}
+          <strong>{{ n.name }}</strong>
+        {% else %}
+          <a href="{{ url_for('view_sample', sample_id=n.id) }}">{{ n.name }}</a>
+        {% endif %}
+        {% if not loop.last %} &raquo; {% endif %}
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  {% macro render_sample_node(n) -%}
+    <li class="mb-1">
+      {% if n.is_current %}
+        <strong><a href="{{ url_for('view_sample', sample_id=n.id) }}">{{ n.name }}</a></strong>
+        <span class="badge bg-primary ms-2">current</span>
+      {% else %}
+        <a href="{{ url_for('view_sample', sample_id=n.id) }}">{{ n.name }}</a>
+      {% endif %}
+
+      {% if n.children and n.children|length %}
+        <ul class="mt-1">
+          {% for c in n.children %}
+            {{ render_sample_node(c) }}
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </li>
+  {%- endmacro %}
+
+  {% if family_tree %}
+    <ul class="mb-0">
+      {{ render_sample_node(family_tree) }}
+    </ul>
+  {% else %}
+    <div class="text-muted">No family data.</div>
+  {% endif %}
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-6">
+
+    <!-- Attributes (display) -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Attributes (Project-defined)</h5>
+      <dl class="row mb-0">
+        {% if attr_defs and attr_defs|length %}
+          {% for a in attr_defs %}
+            <dt class="col-5">
+              {{ a.name }}
+              {% if a.unit %}
+                <span class="text-muted">({{ a.unit }})</span>
+              {% endif %}
+              {% if a.required %}<span class="text-danger" title="required">*</span>{% endif %}
+            </dt>
+            <dd class="col-7">
+              {% if a.value %}
+                {{ a.value }}{% if a.unit %} {{ a.unit }}{% endif %}
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+              {% if a.is_placeholder %}
+                <span class="badge bg-warning text-dark ms-2">needs update</span>
+              {% endif %}
+            </dd>
+          {% endfor %}
+        {% else %}
+          <dt class="col-12 text-muted">No attributes defined for this project.</dt>
+        {% endif %}
+      </dl>
+    </div>
+
+    <!-- Edit Sample -->
+    <div class="card card-body mb-3" id="edit-sample">
+      <h5 class="mb-2">Edit Sample</h5>
+      <form method="post" action="{{ url_for('edit_sample', sample_id=sample.id) }}">
+        <div class="mb-2">
+          <label class="form-label">Sample Name</label>
+          <input class="form-control" name="name" value="{{ sample.name }}" required>
+        </div>
+
+        {% if attr_defs and attr_defs|length %}
+          <h6 class="mt-2">Attributes</h6>
+          {% for a in attr_defs %}
+            <div class="mb-2">
+              <label class="form-label">
+                {{ a.name }}
+                {% if a.unit %}<span class="text-muted">({{ a.unit }})</span>{% endif %}
+                {% if a.required %} *{% endif %}
+                {% if a.is_placeholder %}
+                  <span class="badge bg-warning text-dark ms-2">needs update</span>
+                {% endif %}
+              </label>
+
+              {% if a.field_type == "select" %}
+                <select class="form-select" name="attr_{{ a.id }}" {% if a.required %}required{% endif %}>
+                  {% if not a.required %}
+                    <option value="">(optional)</option>
+                  {% endif %}
+                  {% for choice in a.choices %}
+                    <option value="{{ choice }}" {% if a.value == choice %}selected{% endif %}>{{ choice }}</option>
+                  {% endfor %}
+                </select>
+              {% else %}
+                <input
+                  class="form-control"
+                  name="attr_{{ a.id }}"
+                  {% if a.field_type == "number" %}type="number"
+                  {% elif a.field_type == "date" %}type="date"
+                  {% else %}type="text"{% endif %}
+                  value="{{ a.value or '' }}"
+                  {% if not a.required %}placeholder="(optional){% if a.unit %} — {{ a.unit }}{% endif %}"{% endif %}
+                  {% if a.required %}required{% endif %}
+                >
+              {% endif %}
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="alert alert-info">No attributes defined for this project.</div>
+        {% endif %}
+
+        <div class="mt-3">
+          <button class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Documents -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Documents</h5>
+      <ul class="list-group mb-3">
+        {% for d in sample.documents %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>{{ d.filename }}</span>
+            <a class="btn btn-sm btn-outline-secondary"
+               href="{{ url_for('download_sample_doc', doc_id=d.id) }}">Download</a>
+          </li>
+        {% else %}
+          <li class="list-group-item">No documents uploaded.</li>
+        {% endfor %}
+      </ul>
+      <form method="post" action="{{ url_for('upload_sample_doc', sample_id=sample.id) }}" enctype="multipart/form-data">
+        <div class="input-group">
+          <input type="file" class="form-control" name="file" required>
+          <button class="btn btn-primary">Upload</button>
+        </div>
+      </form>
+    </div>
+
+  </div>
+  <div class="col-lg-6">
+
+    {# Experiment lineage macro #}
+    {% macro exp_chain(exp) -%}
+      {% if exp.parent %}
+        {{ exp_chain(exp.parent) }} &raquo;
+      {% endif %}
+      <a href="{{ url_for('view_experiment', experiment_id=exp.id) }}">{{ exp.title }}</a>
+    {%- endmacro %}
+
+    <!-- Linked Experiments -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Linked Experiments</h5>
+      <ul class="list-group">
+        {% for link in sample.experiment_links %}
+          <li class="list-group-item">
+            <div class="mb-1">
+              {{ exp_chain(link.experiment) }}
+            </div>
+            {% if link.notes %}
+              <div class="small text-muted">{{ link.notes }}</div>
+            {% endif %}
+            <form class="mt-1" method="post" action="{{ url_for('unlink_experiment', link_id=link.id) }}"
+                  onsubmit="return confirm('Remove link to this experiment?');">
+              <button class="btn btn-sm btn-outline-danger">Unlink</button>
+            </form>
+          </li>
+        {% else %}
+          <li class="list-group-item">No experiments linked yet.</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <!-- Link Experiment (no role) -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Link Experiment</h5>
+      <form method="post" action="{{ url_for('link_experiment', sample_id=sample.id) }}">
+        <div class="row g-2">
+          <div class="col-md-8">
+            <label class="form-label">Experiment</label>
+            <select class="form-select" name="experiment_id" required>
+              <option value="">Select...</option>
+              {% for e in exp_choices %}
+                <option value="{{ e.id }}">{{ e.title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Notes (optional)</label>
+            <input class="form-control" name="notes" placeholder="e.g., context">
+          </div>
+        </div>
+        <div class="mt-3">
+          <button class="btn btn-primary">Add Link</button>
+        </div>
+      </form>
+      <div class="form-text mt-1">
+        Linking an experiment also records its full parent lineage.
+      </div>
+    </div>
+
+    <!-- Split Sample (create child) -->
+    <div class="card card-body">
+      <h5 class="mb-2">Split Sample (create child)</h5>
+      <form method="post" action="{{ url_for('split_sample', sample_id=sample.id) }}">
+        <div class="mb-2">
+          <label class="form-label">Child Name</label>
+          <input class="form-control" name="name" required placeholder="e.g., {{ sample.name }} – cut B">
+        </div>
+
+        {% if attr_defs and attr_defs|length %}
+          <h6 class="mt-2">Attributes (required by project)</h6>
+          {% for a in attr_defs %}
+            <div class="mb-2">
+              <label class="form-label">
+                {{ a.name }}
+                {% if a.unit %}<span class="text-muted">({{ a.unit }})</span>{% endif %}
+                {% if a.required %} *{% endif %}
+              </label>
+
+              {% if a.field_type == "select" %}
+                <select class="form-select" name="attr_{{ a.id }}" {% if a.required %}required{% endif %}>
+                  {% if not a.required %}
+                    <option value="">(optional)</option>
+                  {% endif %}
+                  {% for choice in a.choices %}
+                    <option value="{{ choice }}" {% if a.value == choice %}selected{% endif %}>{{ choice }}</option>
+                  {% endfor %}
+                </select>
+              {% else %}
+                <input
+                  class="form-control"
+                  name="attr_{{ a.id }}"
+                  {% if a.field_type == "number" %}type="number"
+                  {% elif a.field_type == "date" %}type="date"
+                  {% else %}type="text"{% endif %}
+                  value="{{ a.value or '' }}"
+                  {% if not a.required %}placeholder="(optional){% if a.unit %} — {{ a.unit }}{% endif %}"{% endif %}
+                  {% if a.required %}required{% endif %}
+                >
+              {% endif %}
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="alert alert-warning mt-2">
+            This project has no sample attributes defined yet. The child will be created with only a name.
+          </div>
+        {% endif %}
+
+        <div class="mt-3">
+          <button class="btn btn-primary">Create Child</button>
+        </div>
+      </form>
+    </div>
+
+  </div>
+</div>
+
+{% endblock %}

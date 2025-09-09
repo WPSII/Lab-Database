@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h2 class="mb-0">Samples</h2>
+    <div class="text-muted small">
+      <span class="badge bg-secondary">{{ samples|length }} total</span>
+      <span class="badge bg-secondary ms-1">{{ projects|length }} projects</span>
+      {# Optional if you pass needs_update_count from the route #}
+      {% if needs_update_count is defined and needs_update_count %}
+        <span class="badge bg-warning text-dark ms-1">{{ needs_update_count }} need update</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="d-flex align-items-center gap-2">
+    <form class="d-flex" method="get" action="{{ url_for('list_samples') }}">
+      <input type="hidden" name="view" value="{{ view }}">
+      <input class="form-control me-2" name="q" value="{{ q or '' }}" placeholder="Search samples...">
+      <button class="btn btn-outline-secondary">Search</button>
+    </form>
+    <div class="btn-group">
+      <a class="btn btn-sm {% if view != 'project' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+         href="{{ url_for('list_samples', view='flat', q=q) }}">Flat</a>
+      <a class="btn btn-sm {% if view == 'project' %}btn-primary{% else %}btn-outline-primary{% endif %}"
+         href="{{ url_for('list_samples', view='project', q=q) }}">By Project</a>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <!-- LEFT: list or tree -->
+  <div class="col-lg-7">
+
+    {% if view == 'flat' %}
+      <ul class="list-group mb-3">
+        {% for s in samples %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <div>
+              <a href="{{ url_for('view_sample', sample_id=s.id) }}">{{ s.name }}</a>
+              <div class="small text-muted">
+                Project: <a href="{{ url_for('view_project', project_id=s.project.id) }}">{{ s.project.title }}</a>
+                {% if s.parent %} · child of <a href="{{ url_for('view_sample', sample_id=s.parent.id) }}">{{ s.parent.name }}</a>{% endif %}
+                · {{ s.experiment_links | length }} linked experiment{% if (s.experiment_links | length) != 1 %}s{% endif %}
+              </div>
+            </div>
+            <small class="text-muted">{{ s.created_at.strftime('%Y-%m-%d') }}</small>
+          </li>
+        {% else %}
+          <li class="list-group-item">No samples yet.</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      {% macro render_tree(node) -%}
+        <li class="mb-1">
+          <a href="{{ url_for('view_sample', sample_id=node.id) }}">{{ node.name }}</a>
+          {% if node.children %}
+            <ul class="mt-1">
+              {% for c in node.children %}
+                {{ render_tree(c) }}
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </li>
+      {%- endmacro %}
+
+      {% for p in projects %}
+        <div class="card card-body mb-3">
+          <h5 class="mb-2 d-flex align-items-center justify-content-between">
+            <a href="{{ url_for('view_project', project_id=p.id) }}">{{ p.title }}</a>
+            <span class="badge bg-secondary">{{ p.samples|length }} samples</span>
+          </h5>
+          {% set roots = roots_by_project.get(p.id, []) %}
+          {% if roots %}
+            <ul class="mb-0">
+              {% for r in roots %}
+                {{ render_tree(r) }}
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="text-muted mb-0">No samples in this project.</p>
+          {% endif %}
+        </div>
+      {% endfor %}
+    {% endif %}
+
+  </div>
+
+  <!-- RIGHT: create sample -->
+  <div class="col-lg-5">
+    <div class="card card-body" id="create-sample" style="max-width: 900px;">
+      <h5 class="mb-3">Create Sample</h5>
+
+      <form method="post" action="{{ url_for('create_sample') }}">
+        <div class="row g-2">
+          <div class="col-md-12">
+            <label class="form-label">Project</label>
+            <select class="form-select" id="project-select" name="project_id" required>
+              <option value="">Select a project…</option>
+              {% for p in projects %}
+                <option value="{{ p.id }}">{{ p.title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-12">
+            <label class="form-label">Parent Sample (optional)</label>
+            <select class="form-select" id="parent-select" name="parent_id" disabled>
+              <option value="">Select a project first…</option>
+            </select>
+          </div>
+          <div class="col-md-12">
+            <label class="form-label">Sample Name</label>
+            <input class="form-control" name="name" required placeholder="e.g., SS316H Heat A">
+          </div>
+        </div>
+
+        <!-- Dynamic project-defined attributes -->
+        <div class="mt-3" id="dyn-attrs" style="display:none;">
+          <h6 class="mb-2">Project-required Attributes</h6>
+          <div id="dyn-attrs-fields"></div>
+          <div class="form-text">These fields are defined by the project owner.</div>
+        </div>
+
+        <!-- Optional: link to an experiment on create -->
+        <div class="row g-2 mt-3">
+          <div class="col-md-8">
+            <label class="form-label">Link Experiment (optional)</label>
+            <select class="form-select" id="experiment-select" name="experiment_id" disabled>
+              <option value="">Select a project first…</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Notes (optional)</label>
+            <input class="form-control" name="notes" placeholder="notes">
+          </div>
+        </div>
+
+        <div class="mt-3">
+          <button class="btn btn-primary" id="create-btn" disabled>Create Sample</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Data blocks -->
+<script id="sample-data" type="application/json">{{ sample_opts | tojson }}</script>
+<script id="exp-data" type="application/json">{{ experiment_opts | tojson }}</script>
+
+<script>
+(function(){
+  const projSel   = document.getElementById('project-select');
+  const parentSel = document.getElementById('parent-select');
+  const expSel    = document.getElementById('experiment-select');
+  const wrap      = document.getElementById('dyn-attrs');
+  const fieldsBox = document.getElementById('dyn-attrs-fields');
+  const createBtn = document.getElementById('create-btn');
+
+  let sampleData = [];
+  let expData = [];
+  try { sampleData = JSON.parse(document.getElementById('sample-data').textContent || '[]'); } catch(_) {}
+  try { expData    = JSON.parse(document.getElementById('exp-data').textContent || '[]'); } catch(_) {}
+
+  function resetSel(sel, placeholder){
+    sel.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = placeholder || '';
+    sel.appendChild(opt);
+  }
+
+  function populateParents(pid){
+    if (!pid) {
+      parentSel.disabled = true;
+      resetSel(parentSel, 'Select a project first…');
+      return;
+    }
+    const sams = sampleData.filter(s => s.project_id === Number(pid));
+    parentSel.disabled = false;
+    resetSel(parentSel, '(optional) Select a parent…');
+    sams.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = s.name;
+      parentSel.appendChild(opt);
+    });
+  }
+
+  function populateExperiments(pid){
+    if (!pid) {
+      expSel.disabled = true;
+      resetSel(expSel, 'Select a project first…');
+      return;
+    }
+    const exps = expData.filter(e => e.project_id === Number(pid));
+    expSel.disabled = false;
+    resetSel(expSel, '(optional) Select an experiment…');
+    exps.forEach(e => {
+      const opt = document.createElement('option');
+      opt.value = e.id;
+      opt.textContent = e.title;
+      expSel.appendChild(opt);
+    });
+  }
+
+  function clearDyn(){ fieldsBox.innerHTML = ''; }
+  function toggleCreate(ok){ createBtn.disabled = !ok; }
+
+  async function loadAttrs(pid){
+    clearDyn();
+    if (!pid) { wrap.style.display = 'none'; toggleCreate(false); return; }
+    try {
+      const resp = await fetch(`/api/project/${pid}/sample-attrs`);
+      const attrs = await resp.json();
+
+      if (!attrs.length) {
+        wrap.style.display = 'none';
+        toggleCreate(true);
+        return;
+      }
+
+      wrap.style.display = '';
+      attrs.forEach(a => {
+        const id = `attr_${a.id}`;
+        const group = document.createElement('div');
+        group.className = 'mb-2';
+
+        const label = document.createElement('label');
+        label.className = 'form-label';
+        label.setAttribute('for', id);
+        label.textContent = a.name + (a.required ? ' *' : '');
+
+        let input;
+        if (a.field_type === 'select') {
+          input = document.createElement('select');
+          input.className = 'form-select';
+          input.name = id; input.id = id;
+          if (!a.required) {
+            const opt = document.createElement('option'); opt.value = ''; opt.textContent = '(optional)';
+            input.appendChild(opt);
+          }
+          (a.choices || []).forEach(v => {
+            const opt = document.createElement('option'); opt.value = v; opt.textContent = v;
+            input.appendChild(opt);
+          });
+        } else {
+          input = document.createElement('input');
+          input.className = 'form-control';
+          input.name = id; input.id = id;
+          input.type = (a.field_type === 'number' ? 'number'
+                    :  a.field_type === 'date'   ? 'date' : 'text');
+          if (!a.required) input.placeholder = '(optional)';
+        }
+        if (a.required) input.required = true;
+
+        group.appendChild(label);
+        group.appendChild(input);
+        fieldsBox.appendChild(group);
+      });
+
+      toggleCreate(true); // browser 'required' validation enforces at submit
+    } catch (e) {
+      console.error('Failed to load project sample attributes', e);
+      wrap.style.display = 'none';
+      toggleCreate(false);
+    }
+  }
+
+  projSel.addEventListener('change', function(){
+    const pid = this.value;
+    populateParents(pid);
+    populateExperiments(pid);
+    loadAttrs(pid);
+  });
+
+  // Prefill if project already selected (rare on reload)
+  if (projSel.value) {
+    populateParents(projSel.value);
+    populateExperiments(projSel.value);
+    loadAttrs(projSel.value);
+  } else {
+    toggleCreate(false);
+  }
+})();
+</script>
+
+{% endblock %}
