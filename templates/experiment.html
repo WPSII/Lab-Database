@@ -89,22 +89,39 @@
       </form>
     </div>
 
-    <!-- Linked Samples (with unlink) -->
-    <div class="card card-body mb-3">
-      <h5 class="mb-2">Linked Samples</h5>
-      <ul class="list-group">
-        {% for ln in experiment.sample_links %}
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <a href="{{ url_for('view_sample', sample_id=ln.sample.id) }}">{{ ln.sample.name }}</a>
-            <form method="post" action="{{ url_for('unlink_experiment', link_id=ln.id) }}" onsubmit="return confirm('Unlink this sample?')">
-              <button class="btn btn-sm btn-outline-danger">Unlink</button>
-            </form>
-          </li>
-        {% else %}
-          <li class="list-group-item">No linked samples.</li>
-        {% endfor %}
-      </ul>
-    </div>
+<!-- Linked Samples -->
+<div class="card card-body mb-3">
+  <h5 class="mb-2">Linked Samples</h5>
+
+  {% macro render_linked_sample(node, linked_ids) -%}
+    <li class="mb-1">
+      <a href="{{ url_for('view_sample', sample_id=node.id) }}">
+        <strong>{{ node.name }}</strong>
+      </a>
+      {% if node.id in linked_ids %}
+        <span class="badge bg-primary ms-2">linked</span>
+      {% endif %}
+
+      {% if node.children and node.children|length %}
+        <ul class="mt-1">
+          {% for c in node.children %}
+            {{ render_linked_sample(c, linked_ids) }}
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </li>
+  {%- endmacro %}
+
+  {% if linked_sample_tree %}
+    <ul class="mb-0">
+      {{ render_linked_sample(linked_sample_tree, linked_sample_ids) }}
+    </ul>
+  {% else %}
+    <div class="text-muted">No samples linked yet.</div>
+  {% endif %}
+</div>
+
+
 
   </div>
   <div class="col-lg-6">

@@ -394,13 +394,14 @@ def build_linked_sample_tree(experiment):
     roots.sort(key=lambda n: (n["sample"].name or "").lower())
     return roots
 
-def serialize_sample_tree(node, current_id=None):
+def serialize_sample_tree(node, current_id=None, linked_ids=None):
     """Convert Sample tree to a dict usable by Jinja recursion."""
     children = sorted(node.children, key=lambda s: (s.name or "").lower())
     return {
         "id": node.id,
         "name": node.name,
         "is_current": (current_id is not None and node.id == current_id),
+        "is_linked": (linked_ids is not None and node.id in linked_ids),
         "children": [serialize_sample_tree(c, current_id) for c in children],
     }
 
@@ -819,6 +820,10 @@ def view_experiment(experiment_id):
         e for e in all_exps
         if e.id != exp.id and not would_create_cycle_as_child(exp, e)
     ]
+     # Linked samples: build sample tree but highlight linked ones
+    linked_ids = {link.sample_id for link in exp.sample_links}
+    sample_roots = [s for s in exp.project.samples if not s.parent_id]
+    linked_sample_tree = [serialize_sample_tree(r) for r in sample_roots]
 
     return render_template(
         "experiment.html",
@@ -826,6 +831,8 @@ def view_experiment(experiment_id):
         exp_tree=exp_tree,
         parent_choices=parent_choices,
         child_choices=child_choices,
+        linked_sample_tree=linked_sample_tree[0] if linked_sample_tree else None,
+        linked_sample_ids=linked_ids,
     )
 
 
