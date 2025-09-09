@@ -5,7 +5,10 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 from flask import jsonify
 import json
-from datetime import datetime
+import qrcode
+import io
+from flask import send_file
+
 
 # --- Config ---
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -94,6 +97,20 @@ class SampleDocument(db.Model):
     mimetype = db.Column(db.String(120))
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+@app.post("/experiment/<int:experiment_id>/edit")
+def edit_experiment_details(experiment_id):
+    exp = Experiment.query.get_or_404(experiment_id)
+    title = (request.form.get("title") or "").strip()
+    details = (request.form.get("details") or "").strip()
+    if not title:
+        flash("Title is required.", "error")
+        return redirect(url_for("view_experiment", experiment_id=exp.id))
+    exp.title = title
+    exp.description = details
+    db.session.commit()
+    flash("Experiment updated.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=exp.id))
+
 
 class SampleExperiment(db.Model):
     """Many-to-many link: a Sample can be acted on by many Experiments (with a role)."""
@@ -109,17 +126,23 @@ class SampleExperiment(db.Model):
 
 # --- Project-defined Sample Attributes ---
 
+# --- Project-defined Sample Attributes ---
 class ProjectSampleAttribute(db.Model):
     __tablename__ = "project_sample_attribute"
     id = db.Column(db.Integer, primary_key=True)
     project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=False)
-    name = db.Column(db.String(100), nullable=False)          # e.g., "Alloy", "Thickness", "Role"
-    field_type = db.Column(db.String(20), default="text")     # "text", "number", "select", "date"
+    name = db.Column(db.String(100), nullable=False)
+    field_type = db.Column(db.String(20), default="text")   # "text", "number", "select", "date"
     required = db.Column(db.Boolean, default=False)
-    choices_json = db.Column(db.Text)                         # JSON array string for select choices (optional)
+    choices_json = db.Column(db.Text)                       # for select
     sort_order = db.Column(db.Integer, default=0)
+    unit = db.Column(db.String(32))                         # <-- NEW (optional)
 
-    project = db.relationship("Project", backref=db.backref("sample_attributes", cascade="all, delete-orphan"))
+    project = db.relationship(
+        "Project",
+        backref=db.backref("sample_attributes", cascade="all, delete-orphan")
+    )
+
 
 class SampleAttributeValue(db.Model):
     __tablename__ = "sample_attribute_value"
@@ -180,6 +203,41 @@ def get_experiment_descendant_ids(exp):
         stack.extend(node.children)
     return seen
 
+# --- Experiment tree helpers ---
+
+def get_ancestors(exp):
+    """Yield ancestors from parent up to root."""
+    seen = set()
+    cur = exp.parent
+    while cur and cur.id not in seen:
+        yield cur
+        seen.add(cur.id)
+        cur = cur.parent
+
+def get_descendants(exp):
+    """Yield all descendants (DFS)."""
+    seen = set()
+    stack = list(exp.children)
+    while stack:
+        n = stack.pop()
+        if n.id in seen:
+            continue
+        seen.add(n.id)
+        yield n
+        stack.extend(n.children)
+
+def would_create_cycle_as_parent(current, candidate_parent):
+    """Invalid if parent == current or parent is a descendant of current."""
+    if candidate_parent.id == current.id:
+        return True
+    return any(d.id == candidate_parent.id for d in get_descendants(current))
+
+def would_create_cycle_as_child(current, candidate_child):
+    """Invalid if child == current or child is an ancestor of current."""
+    if candidate_child.id == current.id:
+        return True
+    return any(a.id == candidate_child.id for a in get_ancestors(current))
+
 def build_linked_sample_tree(experiment):
     """
     Return a forest (list of roots) of linked samples organized by their
@@ -213,6 +271,17 @@ def build_linked_sample_tree(experiment):
         sort_tree(r)
     roots.sort(key=lambda n: (n["sample"].name or "").lower())
     return roots
+
+def serialize_sample_tree(node, current_id=None):
+    """Convert Sample tree to a dict usable by Jinja recursion."""
+    children = sorted(node.children, key=lambda s: (s.name or "").lower())
+    return {
+        "id": node.id,
+        "name": node.name,
+        "is_current": (current_id is not None and node.id == current_id),
+        "children": [serialize_sample_tree(c, current_id) for c in children],
+    }
+
 
 def get_project_attrs(project_id: int):
     return (ProjectSampleAttribute.query
@@ -267,15 +336,15 @@ def get_sample_root(sample):
         cur = cur.parent
     return cur
 
-def serialize_sample_tree(node, current_id=None):
-    """Convert Sample tree to a dict usable by Jinja recursion."""
-    children = sorted(node.children, key=lambda s: (s.name or "").lower())
+def serialize_experiment_tree(node, current_id):
+    kids = sorted(node.children, key=lambda e: (e.title or "").lower())
     return {
         "id": node.id,
-        "name": node.name,
-        "is_current": bool(current_id and node.id == current_id),
-        "children": [serialize_sample_tree(c, current_id) for c in children],
+        "title": node.title,
+        "is_current": node.id == current_id,
+        "children": [serialize_experiment_tree(c, current_id) for c in kids],
     }
+
 
 
 # --- Routes ---
@@ -293,12 +362,12 @@ def add_sample_attribute(project_id):
     required = bool(request.form.get("required"))
     sort_order = request.form.get("sort_order", type=int)
     choices = (request.form.get("choices") or "").strip()
+    unit = (request.form.get("unit") or "").strip()  # <-- NEW
 
     if not name:
         flash("Attribute name is required.", "error")
         return redirect(url_for("view_project", project_id=p.id))
-
-    if field_type not in {"text","number","select","date"}:
+    if field_type not in {"text", "number", "select", "date"}:
         flash("Invalid field type.", "error")
         return redirect(url_for("view_project", project_id=p.id))
 
@@ -311,8 +380,13 @@ def add_sample_attribute(project_id):
         choices_json = json.dumps(opts)
 
     attr = ProjectSampleAttribute(
-        project_id=p.id, name=name, field_type=field_type, required=required,
-        choices_json=choices_json, sort_order=sort_order or 0
+        project_id=p.id,
+        name=name,
+        field_type=field_type,
+        required=required,
+        choices_json=choices_json,
+        sort_order=sort_order or 0,
+        unit=(unit or None),  # <-- NEW
     )
     db.session.add(attr); db.session.commit()
        
@@ -362,6 +436,7 @@ def api_project_sample_attrs(project_id):
             "field_type": a.field_type,
             "required": bool(a.required),
             "choices": (json.loads(a.choices_json) if a.choices_json else []),
+            "unit": a.unit or ""
         }
     return jsonify([serialize(a) for a in attrs])
 
@@ -386,7 +461,8 @@ def view_project(project_id):
              .filter_by(project_id=project.id, parent_id=None)
              .order_by(Sample.name.asc())
              .all())
-    sample_tree = [serialize_sample_tree(r) for r in roots]  # current_id=None
+    sample_tree = [serialize_sample_tree(r, None) for r in roots]
+    current_id=None
     return render_template("project.html", project=project, sample_tree=sample_tree)
 
 
@@ -406,29 +482,37 @@ def create_experiment(project_id):
 
 
 # ---- Experiments ----
-@app.route("/experiment/<int:experiment_id>")
+@app.get("/experiment/<int:experiment_id>")
 def view_experiment(experiment_id):
-    experiment = Experiment.query.get_or_404(experiment_id)
+    exp = Experiment.query.get_or_404(experiment_id)
 
-    # lineage for breadcrumbs
-    lineage = build_experiment_lineage(experiment)
+    # Build exp_tree from root ancestor to show in template
+    root = exp
+    while root.parent:
+        root = root.parent
+    exp_tree = serialize_experiment_tree(root, exp.id)
 
-    # possible new parents = same project, not self, not a descendant
-    candidates = (Experiment.query
-                  .filter_by(project_id=experiment.project_id)
-                  .order_by(Experiment.created_at.asc())
-                  .all())
-    desc_ids = get_experiment_descendant_ids(experiment)
-    parent_choices = [c for c in candidates if c.id != experiment.id and c.id not in desc_ids]
-    linked_sample_tree = build_linked_sample_tree(experiment)
+    # Choices (exclude anything that would cause cycles)
+    all_exps = Experiment.query.filter_by(project_id=exp.project_id).all()
+    # Parent candidates: not self or descendants
+    parent_choices = [
+        e for e in all_exps
+        if e.id != exp.id and not would_create_cycle_as_parent(exp, e)
+    ]
+    # Child candidates: not self or ancestors
+    child_choices = [
+        e for e in all_exps
+        if e.id != exp.id and not would_create_cycle_as_child(exp, e)
+    ]
 
     return render_template(
         "experiment.html",
-        experiment=experiment,
-        lineage=lineage,
+        experiment=exp,
+        exp_tree=exp_tree,
         parent_choices=parent_choices,
-        linked_sample_tree=linked_sample_tree
+        child_choices=child_choices,
     )
+
 
 @app.route("/experiment/<int:experiment_id>/split", methods=["POST"])
 def split_experiment(experiment_id):
@@ -626,7 +710,22 @@ def create_sample():
     flash("Sample created.", "ok")
     return redirect(url_for("view_sample", sample_id=sample.id))
 
+@app.route("/sample/<int:sample_id>/qr")
+def sample_qr(sample_id):
+    sample = Sample.query.get_or_404(sample_id)
+    # Generate the external URL for this sample
+    url = url_for("view_sample", sample_id=sample.id, _external=True)
 
+    # Create QR code
+    img = qrcode.make(url)
+
+    # Save to memory buffer
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+
+    # Return as PNG response
+    return send_file(buf, mimetype="image/png")
 
 @app.route("/sample/<int:sample_id>/split", methods=["POST"])
 def split_sample(sample_id):
@@ -699,6 +798,7 @@ def view_sample(sample_id):
             "choices": (json.loads(a.choices_json) if a.choices_json else []),
             "value": value,
             "is_placeholder": placeholder,
+            "unit": a.unit or ""
         })
 
     return render_template(
@@ -706,37 +806,90 @@ def view_sample(sample_id):
         sample=sample,
         exp_choices=exp_choices,
         lineage=lineage,
-        family_tree=serialize_sample_tree(get_sample_root(sample), sample.id),
+        family_tree = serialize_sample_tree(get_sample_root(sample), sample.id),
         attr_defs=attr_defs,
         needs_update=needs_update,
     )
+
+@app.context_processor
+def inject_global_counts():
+    return dict(global_counts={
+        "projects": Project.query.count(),
+        "samples": Sample.query.count(),
+        "experiments": Experiment.query.count(),
+    })
+
 
 @app.route("/sample/<int:sample_id>/link", methods=["POST"])
 def link_experiment(sample_id):
     sample = Sample.query.get_or_404(sample_id)
     experiment_id = request.form.get("experiment_id", type=int)
-    role = (request.form.get("role") or "other").strip().lower()
-    notes = request.form.get("notes", "").strip()
+    notes = (request.form.get("notes") or "").strip()
 
     if not experiment_id:
         flash("Please choose an experiment.", "error")
         return redirect(url_for("view_sample", sample_id=sample.id))
 
-    # prevent duplicate link with same experiment & role
-    existing = SampleExperiment.query.filter_by(
-        sample_id=sample.id, experiment_id=experiment_id, role=role
-    ).first()
-    if existing:
-        flash("Link already exists.", "error")
+    selected = Experiment.query.get_or_404(experiment_id)
+    if selected.project_id != sample.project_id:
+        flash("Selected experiment must belong to the same project as the sample.", "error")
         return redirect(url_for("view_sample", sample_id=sample.id))
 
-    link = SampleExperiment(
-        sample_id=sample.id, experiment_id=experiment_id, role=role, notes=notes
-    )
-    db.session.add(link)
-    db.session.commit()
-    flash("Experiment linked.", "ok")
+    # Link selected + its ancestors (helper prevents duplicates)
+    link_sample_to_experiment_with_lineage(sample, selected, role="other", notes=notes)
+    flash("Experiment linked (including lineage).", "ok")
     return redirect(url_for("view_sample", sample_id=sample.id))
+
+
+@app.post("/experiment/<int:experiment_id>/link/parent")
+def link_existing_parent(experiment_id):
+    current = Experiment.query.get_or_404(experiment_id)
+    parent_id = request.form.get("parent_id", type=int)
+    if not parent_id:
+        flash("Select a parent experiment.", "error")
+        return redirect(url_for("view_experiment", experiment_id=current.id))
+
+    parent = Experiment.query.get_or_404(parent_id)
+
+    # Same project?
+    if parent.project_id != current.project_id:
+        flash("Parent must be in the same project.", "error")
+        return redirect(url_for("view_experiment", experiment_id=current.id))
+
+    # Cycle protection
+    if would_create_cycle_as_parent(current, parent):
+        flash("That link would create a cycle.", "error")
+        return redirect(url_for("view_experiment", experiment_id=current.id))
+
+    current.parent = parent  # reparent if it already had a parent
+    db.session.commit()
+    flash("Parent linked.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=current.id))
+
+@app.post("/experiment/<int:experiment_id>/link/child")
+def link_existing_child(experiment_id):
+    current = Experiment.query.get_or_404(experiment_id)
+    child_id = request.form.get("child_id", type=int)
+    if not child_id:
+        flash("Select a child experiment.", "error")
+        return redirect(url_for("view_experiment", experiment_id=current.id))
+
+    child = Experiment.query.get_or_404(child_id)
+
+    # Same project?
+    if child.project_id != current.project_id:
+        flash("Child must be in the same project.", "error")
+        return redirect(url_for("view_experiment", experiment_id=current.id))
+
+    # Cycle protection
+    if would_create_cycle_as_child(current, child):
+        flash("That link would create a cycle.", "error")
+        return redirect(url_for("view_experiment", experiment_id=current.id))
+
+    child.parent = current  # reparent if it already had a parent
+    db.session.commit()
+    flash("Child linked.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=current.id))
 
 
 @app.route("/sample/link/<int:link_id>/delete", methods=["POST"])
@@ -747,6 +900,74 @@ def unlink_experiment(link_id):
     db.session.commit()
     flash("Link removed.", "ok")
     return redirect(url_for("view_sample", sample_id=sid))
+
+@app.post("/experiment/<int:experiment_id>/unlink/parent")
+def unlink_parent_experiment(experiment_id):
+    current = Experiment.query.get_or_404(experiment_id)
+    if not current.parent_id:
+        flash("No parent to unlink.", "error")
+        return redirect(url_for("view_experiment", experiment_id=current.id))
+    current.parent = None
+    db.session.commit()
+    flash("Parent unlinked.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=current.id))
+
+
+@app.post("/experiment/<int:experiment_id>/unlink/child/<int:child_id>")
+def unlink_child_experiment(experiment_id, child_id):
+    current = Experiment.query.get_or_404(experiment_id)
+    child = Experiment.query.get_or_404(child_id)
+    if child.parent_id != current.id:
+        flash("That experiment is not a direct child of this one.", "error")
+        return redirect(url_for("view_experiment", experiment_id=current.id))
+    child.parent = None
+    db.session.commit()
+    flash("Child unlinked.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=current.id))
+
+
+@app.post("/experiment/<int:experiment_id>/create/parent")
+def create_parent_experiment(experiment_id):
+    current = Experiment.query.get_or_404(experiment_id)
+    title = (request.form.get("title") or "").strip()
+    details = (request.form.get("details") or "").strip()
+    if not title:
+        flash("Title is required for the new parent.", "error")
+        return redirect(url_for("view_experiment", experiment_id=current.id))
+
+    parent = Experiment(
+        project_id=current.project_id,
+        title=title,
+        description=details
+    )
+    db.session.add(parent)
+    db.session.flush()  # get parent.id without full commit
+
+    # No cycle possible here (parent is new), just link
+    current.parent = parent
+    db.session.commit()
+    flash("Parent experiment created and linked.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=current.id))
+
+@app.post("/experiment/<int:experiment_id>/create/child")
+def create_child_experiment(experiment_id):
+    current = Experiment.query.get_or_404(experiment_id)
+    title = (request.form.get("title") or "").strip()
+    details = (request.form.get("details") or "").strip()
+    if not title:
+        flash("Title is required for the new child.", "error")
+        return redirect(url_for("view_experiment", experiment_id=current.id))
+
+    child = Experiment(
+        project_id=current.project_id,
+        title=title,
+        description=details,
+        parent=current
+    )
+    db.session.add(child)
+    db.session.commit()
+    flash("Child experiment created and linked.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=current.id))
 
 
 @app.route("/sample/<int:sample_id>/upload", methods=["POST"])
@@ -832,14 +1053,46 @@ def edit_sample(sample_id):
 
 # --- Bootstrap DB on first run ---
 
+# --- Bootstrap DB on first run & light migrations ---
 with app.app_context():
     db.create_all()
+
     from sqlalchemy import inspect, text
-    insp = inspect(db.engine)
-    cols = [c["name"] for c in insp.get_columns("experiment")]
-    if "parent_id" not in cols:
+    inspector = inspect(db.engine)
+
+    def has_table(t):
+        try:
+            return inspector.has_table(t)
+        except Exception:
+            return False
+
+    def has_col(t, col):
+        try:
+            return any(c["name"] == col for c in inspector.get_columns(t))
+        except Exception:
+            return False
+
+    def add_col(sql):
+        # Run a simple ALTER TABLE safely
         with db.engine.begin() as conn:
-            conn.execute(text("ALTER TABLE experiment ADD COLUMN parent_id INTEGER"))
+            conn.execute(text(sql))
+
+    # Experiment parent/child
+    if has_table("experiment") and not has_col("experiment", "parent_id"):
+        add_col("ALTER TABLE experiment ADD COLUMN parent_id INTEGER")
+
+    # Project sample attributes: units support
+    if has_table("project_sample_attribute") and not has_col("project_sample_attribute", "unit"):
+        add_col("ALTER TABLE project_sample_attribute ADD COLUMN unit VARCHAR(64)")
+
+    # Sample attribute values: placeholder + timestamp
+    if has_table("sample_attribute_value") and not has_col("sample_attribute_value", "is_placeholder"):
+        add_col("ALTER TABLE sample_attribute_value ADD COLUMN is_placeholder BOOLEAN DEFAULT 0")
+
+    if has_table("sample_attribute_value") and not has_col("sample_attribute_value", "updated_at"):
+        add_col("ALTER TABLE sample_attribute_value ADD COLUMN updated_at DATETIME")
+
+
     
 
 if __name__ == "__main__":

@@ -1,143 +1,245 @@
 {% extends "base.html" %}
 {% block content %}
 
-<p class="mb-3"><a href="{{ url_for('index') }}">&larr; Back to all projects</a></p>
+<p class="mb-3">
+  <a href="{{ url_for('index') }}">&larr; Back to all projects</a>
+</p>
 
-<h2 class="mb-1">{{ project.title }}</h2>
-<div class="text-muted mb-3">Created {{ project.created_at.strftime('%Y-%m-%d') }}</div>
+<!-- Project header / ribbon -->
+<div class="card card-body mb-3">
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+    <div>
+      <h2 class="mb-1">{{ project.title }}</h2>
+      <div class="text-muted">
+        Created {{ project.created_at.strftime('%Y-%m-%d') }}
+      </div>
+    </div>
 
-<div class="card card-body mb-4">
-  <h5 class="mb-2">Description</h5>
-  <p class="mb-0" style="white-space: pre-wrap;">{{ project.description or "—" }}</p>
+    <!-- Quick stats -->
+    <div class="d-flex flex-wrap gap-2">
+      <span class="badge bg-primary">
+        {{ project.samples|length }} sample{{ '' if project.samples|length==1 else 's' }}
+      </span>
+      <span class="badge bg-secondary">
+        {{ project.experiments|length }} experiment{{ '' if project.experiments|length==1 else 's' }}
+      </span>
+      <span class="badge bg-info text-dark">
+        {{ project.sample_attributes|length }} attribute{{ '' if project.sample_attributes|length==1 else 's' }}
+      </span>
+    </div>
+  </div>
+
+  <!-- Description collapsible -->
+  <div class="mt-3">
+    <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#proj-desc" aria-expanded="false">
+      Show/Hide Description
+    </button>
+    <div class="collapse show mt-2" id="proj-desc">
+      <div class="border rounded p-3" style="white-space: pre-wrap;">
+        {{ project.description or "—" }}
+      </div>
+    </div>
+  </div>
 </div>
 
-<div class="card card-body mb-3">
-  <h5 class="mb-2">Samples in this Project</h5>
+<div class="row g-3">
 
-  {% macro render_sample_node(n) -%}
-    <li class="mb-1">
-      <a href="{{ url_for('view_sample', sample_id=n.id) }}">{{ n.name }}</a>
-      {% if n.children and n.children|length %}
-        <ul class="mt-1">
-          {% for c in n.children %}
-            {{ render_sample_node(c) }}
+  <!-- Left: Sample tree -->
+  <div class="col-lg-6">
+    <div class="card card-body mb-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Samples in this Project</h5>
+        <input id="sampleTreeFilter" class="form-control form-control-sm" placeholder="Filter by name…" style="max-width: 240px;">
+      </div>
+
+      {% macro render_sample_node(n) -%}
+        <li class="mb-1 sample-node" data-name="{{ (n.name or '')|lower }}">
+          <a href="{{ url_for('view_sample', sample_id=n.id) }}">{{ n.name }}</a>
+          {% if n.children and n.children|length %}
+            <ul class="mt-1">
+              {% for c in n.children %}
+                {{ render_sample_node(c) }}
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </li>
+      {%- endmacro %}
+
+      {% if sample_tree and sample_tree|length %}
+        <ul id="sampleTreeRoot" class="mb-0">
+          {% for root in sample_tree %}
+            {{ render_sample_node(root) }}
           {% endfor %}
         </ul>
+      {% else %}
+        <p class="text-muted mb-0">No samples in this project yet.</p>
       {% endif %}
-    </li>
-  {%- endmacro %}
-
-  {% if sample_tree and sample_tree|length %}
-    <ul class="mb-0">
-      {% for root in sample_tree %}
-        {{ render_sample_node(root) }}
-      {% endfor %}
-    </ul>
-  {% else %}
-    <p class="text-muted mb-0">No samples in this project yet.</p>
-  {% endif %}
-</div>
-
-
-<div class="card card-body mb-4">
-  <h5 class="mb-2">Sample Attributes</h5>
-
-  <ul class="list-group mb-3">
-    {% for a in project.sample_attributes|sort(attribute='sort_order') %}
-      <li class="list-group-item d-flex justify-content-between align-items-center">
-        <div>
-          <strong>{{ a.name }}</strong>
-          <span class="text-muted">({{ a.field_type }}){% if a.required %} · required{% endif %}</span>
-          {% if a.field_type == 'select' and a.choices_json %}
-            <div class="small text-muted">choices: {{ (a.choices_json | tojson) }}</div>
-          {% endif %}
-        </div>
-        <form method="post" action="{{ url_for('delete_sample_attribute', attr_id=a.id) }}" onsubmit="return confirm('Remove attribute?');">
-          <button class="btn btn-sm btn-outline-danger">Remove</button>
-        </form>
-      </li>
-    {% else %}
-      <li class="list-group-item">No attributes defined yet.</li>
-    {% endfor %}
-  </ul>
-
-  <form method="post" action="{{ url_for('add_sample_attribute', project_id=project.id) }}">
-    <div class="row g-2">
-      <div class="col-md-3">
-        <label class="form-label">Name</label>
-        <input class="form-control" name="name" placeholder="e.g., Alloy" required>
-      </div>
-      <div class="col-md-3">
-        <label class="form-label">Field Type</label>
-        <select class="form-select" name="field_type">
-          <option value="text">Text</option>
-          <option value="number">Number</option>
-          <option value="select">Select</option>
-          <option value="date">Date</option>
-        </select>
-      </div>
-      <div class="col-md-3">
-        <label class="form-label">Choices (for Select)</label>
-        <input class="form-control" name="choices" placeholder="comma,separated,values">
-      </div>
-      <div class="col-md-2">
-        <label class="form-label">Order</label>
-        <input class="form-control" name="sort_order" type="number" value="0">
-      </div>
-      <div class="col-md-1 d-flex align-items-end">
-        <div class="form-check">
-          <input class="form-check-input" type="checkbox" id="attrRequired" name="required">
-          <label class="form-check-label" for="attrRequired">Req</label>
-        </div>
-      </div>
     </div>
-    <div class="mt-3">
-      <button class="btn btn-primary">Add Attribute</button>
-    </div>
-  </form>
-</div>
+  </div>
 
+  <!-- Right: Attributes + Experiments -->
+  <div class="col-lg-6">
 
-<h3 class="mb-2">Experiments</h3>
+    <!-- Sample Attributes -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Sample Attributes</h5>
 
-{% macro render_exp(node) -%}
-  <li>
-    <a href="{{ url_for('view_experiment', experiment_id=node.id) }}">{{ node.title }}</a>
-    {% if node.children %}
-      <ul>
-        {% for c in node.children %}
-          {{ render_exp(c) }}
+      <ul class="list-group mb-3">
+        {% for a in project.sample_attributes|sort(attribute='sort_order') %}
+          <li class="list-group-item d-flex justify-content-between align-items-start">
+            <div>
+              <div class="fw-semibold">
+                {{ a.name }}
+                {% if a.unit %}
+                  <span class="badge bg-light text-muted ms-1">{{ a.unit }}</span>
+                {% endif %}
+              </div>
+              <div class="small text-muted">
+                type: {{ a.field_type }}{% if a.required %} · required{% endif %}
+                {% if a.field_type == 'select' and a.choices_json %}
+                  · choices: {{ a.choices_json }}
+                {% endif %}
+                {% if a.sort_order %} · order: {{ a.sort_order }}{% endif %}
+              </div>
+            </div>
+            <form method="post"
+                  action="{{ url_for('delete_sample_attribute', attr_id=a.id) }}"
+                  onsubmit="return confirm('Remove attribute? This will delete values from all samples in this project.');">
+              <button class="btn btn-sm btn-outline-danger">Remove</button>
+            </form>
+          </li>
+        {% else %}
+          <li class="list-group-item">No attributes defined yet.</li>
         {% endfor %}
       </ul>
-    {% endif %}
-  </li>
-{%- endmacro %}
 
-{% set roots = project.experiments | selectattr('parent_id', 'equalto', None) | list %}
-{% if roots %}
-  <ul class="mb-3">
-    {% for r in roots %}
-      {{ render_exp(r) }}
-    {% endfor %}
-  </ul>
-{% else %}
-  <p class="text-muted">No experiments for this project.</p>
-{% endif %}
+      <!-- Add attribute -->
+      <form method="post" action="{{ url_for('add_sample_attribute', project_id=project.id) }}">
+        <div class="row g-2">
+          <div class="col-md-3">
+            <label class="form-label">Name</label>
+            <input class="form-control" name="name" placeholder="e.g., Thickness" required>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Field Type</label>
+            <select class="form-select" name="field_type" id="attr-field-type">
+              <option value="text">Text</option>
+              <option value="number">Number</option>
+              <option value="select">Select</option>
+              <option value="date">Date</option>
+            </select>
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Unit (optional)</label>
+            <input class="form-control" name="unit" list="unit-list" placeholder="e.g., mm">
+            <datalist id="unit-list">
+              <option>mm</option><option>µm</option><option>nm</option>
+              <option>°C</option><option>K</option>
+              <option>MPa</option><option>GPa</option>
+              <option>wt%</option><option>at%</option><option>mol%</option>
+              <option>hr</option><option>min</option><option>s</option>
+            </datalist>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Choices (for Select)</label>
+            <input class="form-control" name="choices" id="attr-choices" placeholder="comma,separated,values" disabled>
+          </div>
+          <div class="col-md-1">
+            <label class="form-label">Order</label>
+            <input class="form-control" name="sort_order" type="number" value="0">
+          </div>
+          <div class="col-md-1 d-flex align-items-end">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="attrRequired" name="required">
+              <label class="form-check-label" for="attrRequired">Req</label>
+            </div>
+          </div>
+        </div>
+        <div class="mt-2 small text-muted">
+          Removing an attribute deletes its values from all samples in this project.
+        </div>
+        <div class="mt-3">
+          <button class="btn btn-primary">Add Attribute</button>
+        </div>
+      </form>
+    </div>
 
-<!-- (Optional) Quick-create Experiment -->
-<div class="card card-body mt-4" style="max-width: 720px;">
-  <h5 class="mb-2">Create Experiment</h5>
-  <form method="post" action="{{ url_for('create_experiment', project_id=project.id) }}">
-    <div class="mb-2">
-      <label class="form-label">Title</label>
-      <input class="form-control" name="title" required>
+    <!-- Experiments -->
+    <div class="card card-body">
+      <h5 class="mb-2">Experiments</h5>
+
+      {% macro render_exp(node) -%}
+        <li>
+          <a href="{{ url_for('view_experiment', experiment_id=node.id) }}">{{ node.title }}</a>
+          {% if node.children %}
+            <ul>
+              {% for c in node.children %}
+                {{ render_exp(c) }}
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </li>
+      {%- endmacro %}
+
+      {% set roots = project.experiments | selectattr('parent_id', 'equalto', None) | list %}
+      {% if roots %}
+        <ul class="mb-3">
+          {% for r in roots %}
+            {{ render_exp(r) }}
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-muted mb-3">No experiments for this project.</p>
+      {% endif %}
+
+      <!-- Quick-create Experiment -->
+      <div class="border-top pt-3 mt-2">
+        <h6 class="mb-2">Create Experiment</h6>
+        <form method="post" action="{{ url_for('create_experiment', project_id=project.id) }}">
+          <div class="mb-2">
+            <label class="form-label">Title</label>
+            <input class="form-control" name="title" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Details</label>
+            <textarea class="form-control" name="description" rows="3" placeholder="Optional notes, parameters, etc."></textarea>
+          </div>
+          <button class="btn btn-primary">Create</button>
+        </form>
+      </div>
     </div>
-    <div class="mb-3">
-      <label class="form-label">Description</label>
-      <textarea class="form-control" name="description" rows="3"></textarea>
-    </div>
-    <button class="btn btn-primary">Create</button>
-  </form>
+
+  </div>
 </div>
+
+<!-- Tiny script: enable/disable Choices by field type -->
+<script>
+(function(){
+  const sel = document.getElementById('attr-field-type');
+  const choices = document.getElementById('attr-choices');
+  if (!sel || !choices) return;
+
+  function update() {
+    const isSelect = sel.value === 'select';
+    choices.disabled = !isSelect;
+    if (!isSelect) choices.value = '';
+  }
+  sel.addEventListener('change', update);
+  update();
+
+  // sample tree filter
+  const filter = document.getElementById('sampleTreeFilter');
+  const nodes = document.querySelectorAll('#sampleTreeRoot .sample-node');
+  if (filter && nodes) {
+    filter.addEventListener('input', function(){
+      const q = (this.value || '').trim().toLowerCase();
+      nodes.forEach(li => {
+        const name = li.getAttribute('data-name') || '';
+        li.style.display = (!q || name.includes(q)) ? '' : 'none';
+      });
+    });
+  }
+})();
+</script>
 
 {% endblock %}

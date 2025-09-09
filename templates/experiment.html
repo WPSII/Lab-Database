@@ -5,45 +5,77 @@
   <a href="{{ url_for('view_project', project_id=experiment.project.id) }}">&larr; Back to project</a>
 </p>
 
-<!-- Lineage breadcrumbs -->
-<p class="small text-muted">
-  Lineage:
-  {% for anc in lineage %}
-    <a href="{{ url_for('view_experiment', experiment_id=anc.id) }}">{{ anc.title }}</a> &raquo;
-  {% endfor %}
-  <strong>{{ experiment.title }}</strong>
-</p>
+<!-- Header -->
+<div class="card card-body mb-3">
+  <h2 class="mb-1">{{ experiment.title }}</h2>
+  <div class="text-muted">
+    Project:
+    <a href="{{ url_for('view_project', project_id=experiment.project.id) }}">{{ experiment.project.title }}</a>
+    &middot; Created {{ experiment.created_at.strftime('%Y-%m-%d') }}
+  </div>
 
-<h2 class="mb-1">{{ experiment.title }}</h2>
-<div class="text-muted mb-3">
-  Project:
-  <a href="{{ url_for('view_project', project_id=experiment.project.id) }}">{{ experiment.project.title }}</a>
-  &middot; Created {{ experiment.created_at.strftime('%Y-%m-%d') }}
+  {# Breadcrumb from root → current #}
+  {% macro breadcrumb(exp) -%}
+    {% if exp.parent %}
+      {{ breadcrumb(exp.parent) }} &raquo;
+    {% endif %}
+    {% if exp.id == experiment.id %}
+      <strong>{{ exp.title }}</strong>
+    {% else %}
+      <a href="{{ url_for('view_experiment', experiment_id=exp.id) }}">{{ exp.title }}</a>
+    {% endif %}
+  {%- endmacro %}
+
+  {% if experiment.parent %}
+    <div class="small text-muted mt-2">
+      Lineage: {{ breadcrumb(experiment) }}
+    </div>
+  {% endif %}
 </div>
 
 <div class="row g-3">
   <div class="col-lg-6">
 
-    <!-- Details -->
+    <!-- Details (read-only view) -->
     <div class="card card-body mb-3">
       <h5 class="mb-2">Details</h5>
-      <p class="mb-0" style="white-space: pre-wrap;">{{ experiment.description or "—" }}</p>
+      {% if experiment.description %}
+        <pre class="mb-0" style="white-space:pre-wrap">{{ experiment.description }}</pre>
+      {% else %}
+        <div class="text-muted mb-0">No details yet.</div>
+      {% endif %}
+    </div>
+
+    <!-- Edit Details -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Edit Details</h5>
+      <form method="post" action="{{ url_for('edit_experiment_details', experiment_id=experiment.id) }}">
+        <div class="mb-2">
+          <label class="form-label">Title</label>
+          <input class="form-control" name="title" value="{{ experiment.title }}" required>
+        </div>
+        <div class="mb-2">
+          <label class="form-label">Details</label>
+          <textarea class="form-control" name="details" rows="5" placeholder="Describe goals, parameters, notes...">{{ experiment.description or '' }}</textarea>
+        </div>
+        <button class="btn btn-primary mt-2">Save</button>
+      </form>
     </div>
 
     <!-- Documents -->
-    <div class="card card-body">
+    <div class="card card-body mb-3">
       <h5 class="mb-2">Documents</h5>
       <ul class="list-group mb-3">
         {% for d in experiment.documents %}
           <li class="list-group-item d-flex justify-content-between align-items-center">
             <span>{{ d.filename }}</span>
-            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('download', doc_id=d.id) }}">Download</a>
+            <a class="btn btn-sm btn-outline-secondary"
+               href="{{ url_for('download', doc_id=d.id) }}">Download</a>
           </li>
         {% else %}
           <li class="list-group-item">No documents uploaded.</li>
         {% endfor %}
       </ul>
-
       <form method="post" action="{{ url_for('upload_document', experiment_id=experiment.id) }}" enctype="multipart/form-data">
         <div class="input-group">
           <input type="file" class="form-control" name="file" required>
@@ -52,110 +84,126 @@
       </form>
     </div>
 
-  </div>
+    <!-- Linked Samples (with unlink) -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Linked Samples</h5>
+      <ul class="list-group">
+        {% for ln in experiment.sample_links %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <a href="{{ url_for('view_sample', sample_id=ln.sample.id) }}">{{ ln.sample.name }}</a>
+            <form method="post" action="{{ url_for('unlink_experiment', link_id=ln.id) }}" onsubmit="return confirm('Unlink this sample?')">
+              <button class="btn btn-sm btn-outline-danger">Unlink</button>
+            </form>
+          </li>
+        {% else %}
+          <li class="list-group-item">No linked samples.</li>
+        {% endfor %}
+      </ul>
+    </div>
 
+  </div>
   <div class="col-lg-6">
 
-    <!-- Linked Samples -->
-    <!-- Linked Samples (tree by family) -->
+    <!-- LINKED EXPERIMENTS -->
     <div class="card card-body mb-3">
-      <h5 class="mb-2">Linked Samples (by family)</h5>
+      <div class="d-flex justify-content-between align-items-center">
+        <h5 class="mb-2">Linked Experiments</h5>
+      </div>
 
-      {% macro render_sample_node(node) -%}
-        <li class="list-group-item">
-          <div>
-            <a href="{{ url_for('view_sample', sample_id=node.sample.id) }}">{{ node.sample.name }}</a>
-            <div class="small text-muted">
-              role: {{ node.link.role }}{% if node.link.notes %} · {{ node.link.notes }}{% endif %}
-            </div>
-          </div>
-
-          {% if node.children %}
-            <ul class="list-group mt-2">
-              {% for c in node.children %}
-                {{ render_sample_node(c) }}
+      {# Tree macro expects exp_tree = dict{id,title,is_current,children:[...] } #}
+      {% macro render_exp_node(n) -%}
+        <li class="mb-1">
+          {% if n.is_current %}
+            <strong><a href="{{ url_for('view_experiment', experiment_id=n.id) }}">{{ n.title }}</a></strong>
+            <span class="badge bg-primary ms-2">current</span>
+          {% else %}
+            <a href="{{ url_for('view_experiment', experiment_id=n.id) }}">{{ n.title }}</a>
+          {% endif %}
+          {% if n.children and n.children|length %}
+            <ul class="mt-1">
+              {% for c in n.children %}
+                {{ render_exp_node(c) }}
               {% endfor %}
             </ul>
           {% endif %}
         </li>
       {%- endmacro %}
 
-      {% if linked_sample_tree and linked_sample_tree|length > 0 %}
-        <ul class="list-group">
-          {% for root in linked_sample_tree %}
-            {{ render_sample_node(root) }}
-          {% endfor %}
+      {% if exp_tree %}
+        <ul class="mb-3">
+          {{ render_exp_node(exp_tree) }}
         </ul>
       {% else %}
-        <div class="list-group">
-          <div class="list-group-item">No samples linked yet.</div>
-        </div>
+        <div class="text-muted mb-3">No parent/child links yet.</div>
       {% endif %}
-    </div>
 
+      <hr class="my-3">
 
-    <!-- Child Experiments -->
-    <div class="card card-body mb-3">
-      <h5 class="mb-2">Child Experiments</h5>
-      <ul class="list-group">
-        {% for child in experiment.children %}
-          <li class="list-group-item">
-            <a href="{{ url_for('view_experiment', experiment_id=child.id) }}">{{ child.title }}</a>
-          </li>
-        {% else %}
-          <li class="list-group-item">No child experiments.</li>
-        {% endfor %}
-      </ul>
-    </div>
-
-    <!-- Create Child Experiment -->
-    <div class="card card-body mb-3">
-      <h5 class="mb-2">Create Child Experiment</h5>
-      <form method="post" action="{{ url_for('split_experiment', experiment_id=experiment.id) }}">
-        <div class="mb-2">
-          <label class="form-label">Title</label>
-          <input class="form-control" name="title" required placeholder="{{ experiment.title }} - follow up">
-        </div>
-        <div class="mb-2">
-          <label class="form-label">Description</label>
-          <textarea class="form-control" name="description" rows="3"></textarea>
-        </div>
-        <button class="btn btn-primary">Create Child</button>
-      </form>
-    </div>
-
-    <!-- Re-parent -->
-    <div class="card card-body">
-      <h5 class="mb-2">Parent</h5>
-      <p class="mb-2">
-        Current:
-        {% if experiment.parent %}
-          <a href="{{ url_for('view_experiment', experiment_id=experiment.parent.id) }}">{{ experiment.parent.title }}</a>
-        {% else %}
-          <em>None (root)</em>
-        {% endif %}
-      </p>
-      <form method="post" action="{{ url_for('reparent_experiment', experiment_id=experiment.id) }}">
-        <div class="row g-2 align-items-end">
-          <div class="col-md-8">
-            <label class="form-label">Change parent (same project)</label>
-            <select class="form-select" name="parent_id">
-              <option value="">— No parent (root) —</option>
-              {% for p in parent_choices %}
-                <option value="{{ p.id }}" {% if experiment.parent and p.id == experiment.parent.id %}selected{% endif %}>
-                  {{ p.title }}
-                </option>
+      <!-- Link EXISTING experiments -->
+      <div class="row g-2">
+        <div class="col-md-6">
+          <form method="post" action="{{ url_for('link_existing_parent', experiment_id=experiment.id) }}">
+            <label class="form-label">Link existing <strong>Parent</strong></label>
+            <select class="form-select mb-2" name="parent_id" required>
+              <option value="">Select experiment…</option>
+              {% for opt in parent_choices %}
+                <option value="{{ opt.id }}">{{ opt.title }}</option>
               {% endfor %}
             </select>
-          </div>
-          <div class="col-md-4">
-            <button class="btn btn-outline-primary w-100">Update Parent</button>
-          </div>
+            <button class="btn btn-outline-primary w-100">Link Parent</button>
+          </form>
         </div>
-        <div class="form-text">
-          Cannot select this experiment or its descendants; cycles are prevented.
+        <div class="col-md-6">
+          <form method="post" action="{{ url_for('link_existing_child', experiment_id=experiment.id) }}">
+            <label class="form-label">Link existing <strong>Child</strong></label>
+            <select class="form-select mb-2" name="child_id" required>
+              <option value="">Select experiment…</option>
+              {% for opt in child_choices %}
+                <option value="{{ opt.id }}">{{ opt.title }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn btn-outline-primary w-100">Link Child</button>
+          </form>
         </div>
-      </form>
+      </div>
+
+      <div class="form-text mt-2">
+        Existing lists exclude the current experiment and any nodes that would create a cycle.
+      </div>
+
+      <hr class="my-3">
+
+      <!-- Create NEW parent/child experiments -->
+      <div class="row g-3">
+        <div class="col-md-6">
+          <h6>Create Parent Experiment</h6>
+          <form method="post" action="{{ url_for('create_parent_experiment', experiment_id=experiment.id) }}">
+            <div class="mb-2">
+              <label class="form-label">Title</label>
+              <input class="form-control" name="title" required placeholder="e.g., Nitridation – Stage 1">
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Details</label>
+              <textarea class="form-control" name="details" rows="4" placeholder="Parameters, notes, etc."></textarea>
+            </div>
+            <button class="btn btn-primary">Create & Link Parent</button>
+          </form>
+        </div>
+        <div class="col-md-6">
+          <h6>Create Child Experiment</h6>
+          <form method="post" action="{{ url_for('create_child_experiment', experiment_id=experiment.id) }}">
+            <div class="mb-2">
+              <label class="form-label">Title</label>
+              <input class="form-control" name="title" required placeholder="e.g., Nitridation – Step 2">
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Details</label>
+              <textarea class="form-control" name="details" rows="4" placeholder="Parameters, notes, etc."></textarea>
+            </div>
+            <button class="btn btn-primary">Create & Link Child</button>
+          </form>
+        </div>
+      </div>
     </div>
 
   </div>

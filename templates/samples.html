@@ -2,7 +2,18 @@
 {% block content %}
 
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h2>Samples</h2>
+  <div>
+    <h2 class="mb-0">Samples</h2>
+    <div class="text-muted small">
+      <span class="badge bg-secondary">{{ samples|length }} total</span>
+      <span class="badge bg-secondary ms-1">{{ projects|length }} projects</span>
+      {# Optional if you pass needs_update_count from the route #}
+      {% if needs_update_count is defined and needs_update_count %}
+        <span class="badge bg-warning text-dark ms-1">{{ needs_update_count }} need update</span>
+      {% endif %}
+    </div>
+  </div>
+
   <div class="d-flex align-items-center gap-2">
     <form class="d-flex" method="get" action="{{ url_for('list_samples') }}">
       <input type="hidden" name="view" value="{{ view }}">
@@ -18,137 +29,138 @@
   </div>
 </div>
 
-{% if view == 'flat' %}
-  <ul class="list-group mb-4">
-    {% for s in samples %}
-      <li class="list-group-item d-flex justify-content-between align-items-center">
-        <div>
-          <a href="{{ url_for('view_sample', sample_id=s.id) }}">{{ s.name }}</a>
-          <div class="small text-muted">
-            Project: <a href="{{ url_for('view_project', project_id=s.project.id) }}">{{ s.project.title }}</a>
-            {% if s.manufacturer %} · {{ s.manufacturer }}{% endif %}
-            · {{ s.experiment_links | length }} linked experiment{% if (s.experiment_links | length) != 1 %}s{% endif %}
+<div class="row g-3">
+  <!-- LEFT: list or tree -->
+  <div class="col-lg-7">
+
+    {% if view == 'flat' %}
+      <ul class="list-group mb-3">
+        {% for s in samples %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <div>
+              <a href="{{ url_for('view_sample', sample_id=s.id) }}">{{ s.name }}</a>
+              <div class="small text-muted">
+                Project: <a href="{{ url_for('view_project', project_id=s.project.id) }}">{{ s.project.title }}</a>
+                {% if s.parent %} · child of <a href="{{ url_for('view_sample', sample_id=s.parent.id) }}">{{ s.parent.name }}</a>{% endif %}
+                · {{ s.experiment_links | length }} linked experiment{% if (s.experiment_links | length) != 1 %}s{% endif %}
+              </div>
+            </div>
+            <small class="text-muted">{{ s.created_at.strftime('%Y-%m-%d') }}</small>
+          </li>
+        {% else %}
+          <li class="list-group-item">No samples yet.</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      {% macro render_tree(node) -%}
+        <li class="mb-1">
+          <a href="{{ url_for('view_sample', sample_id=node.id) }}">{{ node.name }}</a>
+          {% if node.children %}
+            <ul class="mt-1">
+              {% for c in node.children %}
+                {{ render_tree(c) }}
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </li>
+      {%- endmacro %}
+
+      {% for p in projects %}
+        <div class="card card-body mb-3">
+          <h5 class="mb-2 d-flex align-items-center justify-content-between">
+            <a href="{{ url_for('view_project', project_id=p.id) }}">{{ p.title }}</a>
+            <span class="badge bg-secondary">{{ p.samples|length }} samples</span>
+          </h5>
+          {% set roots = roots_by_project.get(p.id, []) %}
+          {% if roots %}
+            <ul class="mb-0">
+              {% for r in roots %}
+                {{ render_tree(r) }}
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="text-muted mb-0">No samples in this project.</p>
+          {% endif %}
+        </div>
+      {% endfor %}
+    {% endif %}
+
+  </div>
+
+  <!-- RIGHT: create sample -->
+  <div class="col-lg-5">
+    <div class="card card-body" id="create-sample" style="max-width: 900px;">
+      <h5 class="mb-3">Create Sample</h5>
+
+      <form method="post" action="{{ url_for('create_sample') }}">
+        <div class="row g-2">
+          <div class="col-md-12">
+            <label class="form-label">Project</label>
+            <select class="form-select" id="project-select" name="project_id" required>
+              <option value="">Select a project…</option>
+              {% for p in projects %}
+                <option value="{{ p.id }}">{{ p.title }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-12">
+            <label class="form-label">Parent Sample (optional)</label>
+            <select class="form-select" id="parent-select" name="parent_id" disabled>
+              <option value="">Select a project first…</option>
+            </select>
+          </div>
+          <div class="col-md-12">
+            <label class="form-label">Sample Name</label>
+            <input class="form-control" name="name" required placeholder="e.g., SS316H Heat A">
           </div>
         </div>
-        <small class="text-muted">{{ s.created_at.strftime('%Y-%m-%d') }}</small>
-      </li>
-    {% else %}
-      <li class="list-group-item">No samples yet.</li>
-    {% endfor %}
-  </ul>
-{% else %}
-  {# --- Project tree view with recursion --- #}
-  {% macro render_tree(node) -%}
-    <li>
-      <a href="{{ url_for('view_sample', sample_id=node.id) }}">{{ node.name }}</a>
-      {% if node.children %}
-        <ul>
-          {% for c in node.children %}
-            {{ render_tree(c) }}
-          {% endfor %}
-        </ul>
-      {% endif %}
-    </li>
-  {%- endmacro %}
 
-  {% for p in projects %}
-    <div class="card card-body mb-3">
-      <h5 class="mb-2">
-        <a href="{{ url_for('view_project', project_id=p.id) }}">{{ p.title }}</a>
-      </h5>
-      {% set roots = roots_by_project.get(p.id, []) %}
-      {% if roots %}
-        <ul class="mb-0">
-          {% for r in roots %}
-            {{ render_tree(r) }}
-          {% endfor %}
-        </ul>
-      {% else %}
-        <p class="text-muted mb-0">No samples in this project.</p>
-      {% endif %}
-    </div>
-  {% endfor %}
-{% endif %}
+        <!-- Dynamic project-defined attributes -->
+        <div class="mt-3" id="dyn-attrs" style="display:none;">
+          <h6 class="mb-2">Project-required Attributes</h6>
+          <div id="dyn-attrs-fields"></div>
+          <div class="form-text">These fields are defined by the project owner.</div>
+        </div>
 
-<!-- Create Sample -->
-<div class="card card-body" style="max-width: 900px;">
-  <h5 class="mb-3">Create Sample</h5>
-  <!-- (Place inside the Create Sample form) -->
-    <div class="row g-2 mt-2">
-        <div class="col-md-6">
+        <!-- Optional: link to an experiment on create -->
+        <div class="row g-2 mt-3">
+          <div class="col-md-8">
             <label class="form-label">Link Experiment (optional)</label>
             <select class="form-select" id="experiment-select" name="experiment_id" disabled>
-                <option value="">Select a project first…</option>
+              <option value="">Select a project first…</option>
             </select>
-        </div>
-        <div class="col-md-3">
-            <label class="form-label">Role</label>
-            <select class="form-select" name="role">
-                <option value="irradiation">irradiation</option>
-                <option value="corrosion">corrosion</option>
-                <option value="polishing">polishing</option>
-                <option value="other" selected>other</option>
-            </select>
-        </div>
-        <div class="col-md-3">
+          </div>
+          <div class="col-md-4">
             <label class="form-label">Notes (optional)</label>
-            <input class="form-control" name="notes" placeholder="e.g., fluence/temp/media">
+            <input class="form-control" name="notes" placeholder="notes">
+          </div>
         </div>
-    </div>
 
-  <form method="post" action="{{ url_for('create_sample') }}">
-    <div class="row g-2">
-      <div class="col-md-4">
-        <label class="form-label">Project</label>
-        <select class="form-select" id="project-select" name="project_id" required>
-          <option value="">Select a project…</option>
-          {% for p in projects %}
-            <option value="{{ p.id }}">{{ p.title }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="col-md-4">
-        <label class="form-label">Parent Sample (optional)</label>
-        <select class="form-select" id="parent-select" name="parent_id" disabled>
-          <option value="">Select a project first…</option>
-        </select>
-      </div>
-      <div class="col-md-4">
-        <label class="form-label">Sample Name</label>
-        <input class="form-control" name="name" required placeholder="e.g., SS316H Heat A">
-      </div>
+        <div class="mt-3">
+          <button class="btn btn-primary" id="create-btn" disabled>Create Sample</button>
+        </div>
+      </form>
     </div>
-
-    <!-- Dynamic project-defined attributes -->
-    <div class="mt-3" id="dyn-attrs" style="display:none;">
-      <h6 class="mb-2">Project-required Attributes</h6>
-      <div id="dyn-attrs-fields"></div>
-      <div class="form-text">
-        These fields are defined by the project owner.
-      </div>
-    </div>
-
-    <div class="mt-3">
-      <button class="btn btn-primary" id="create-btn" disabled>Create Sample</button>
-    </div>
-  </form>
+  </div>
 </div>
 
-<!-- ONE clean data block: parent candidate samples (id, name, project_id) -->
+<!-- Data blocks -->
 <script id="sample-data" type="application/json">{{ sample_opts | tojson }}</script>
+<script id="exp-data" type="application/json">{{ experiment_opts | tojson }}</script>
 
 <script>
 (function(){
   const projSel   = document.getElementById('project-select');
   const parentSel = document.getElementById('parent-select');
+  const expSel    = document.getElementById('experiment-select');
   const wrap      = document.getElementById('dyn-attrs');
-  const container = document.getElementById('dyn-attrs-fields');
+  const fieldsBox = document.getElementById('dyn-attrs-fields');
   const createBtn = document.getElementById('create-btn');
 
-  // parse precomputed safe data from the server
   let sampleData = [];
-  try { sampleData = JSON.parse(document.getElementById('sample-data').textContent || '[]'); }
-  catch(_) { sampleData = []; }
+  let expData = [];
+  try { sampleData = JSON.parse(document.getElementById('sample-data').textContent || '[]'); } catch(_) {}
+  try { expData    = JSON.parse(document.getElementById('exp-data').textContent || '[]'); } catch(_) {}
 
   function resetSel(sel, placeholder){
     sel.innerHTML = '';
@@ -175,8 +187,25 @@
     });
   }
 
-  function clearDyn(){ container.innerHTML = ''; }
-  function toggleCreate(enabled){ createBtn.disabled = !enabled; }
+  function populateExperiments(pid){
+    if (!pid) {
+      expSel.disabled = true;
+      resetSel(expSel, 'Select a project first…');
+      return;
+    }
+    const exps = expData.filter(e => e.project_id === Number(pid));
+    expSel.disabled = false;
+    resetSel(expSel, '(optional) Select an experiment…');
+    exps.forEach(e => {
+      const opt = document.createElement('option');
+      opt.value = e.id;
+      opt.textContent = e.title;
+      expSel.appendChild(opt);
+    });
+  }
+
+  function clearDyn(){ fieldsBox.innerHTML = ''; }
+  function toggleCreate(ok){ createBtn.disabled = !ok; }
 
   async function loadAttrs(pid){
     clearDyn();
@@ -187,7 +216,7 @@
 
       if (!attrs.length) {
         wrap.style.display = 'none';
-        toggleCreate(true); // allow creation even if project has no attrs
+        toggleCreate(true);
         return;
       }
 
@@ -227,10 +256,10 @@
 
         group.appendChild(label);
         group.appendChild(input);
-        container.appendChild(group);
+        fieldsBox.appendChild(group);
       });
 
-      toggleCreate(true); // browser 'required' will enforce at submit
+      toggleCreate(true); // browser 'required' validation enforces at submit
     } catch (e) {
       console.error('Failed to load project sample attributes', e);
       wrap.style.display = 'none';
@@ -241,12 +270,14 @@
   projSel.addEventListener('change', function(){
     const pid = this.value;
     populateParents(pid);
+    populateExperiments(pid);
     loadAttrs(pid);
   });
 
-  // prefill on reload if project already selected
+  // Prefill if project already selected (rare on reload)
   if (projSel.value) {
     populateParents(projSel.value);
+    populateExperiments(projSel.value);
     loadAttrs(projSel.value);
   } else {
     toggleCreate(false);
