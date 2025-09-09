@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block content %}
+
+<p class="mb-3">
+  <a href="{{ url_for('index') }}">&larr; Back to projects</a>
+</p>
+<div class="text-muted mb-2">
+  Created {{ sample.created_at.strftime('%Y-%m-%d') }}
+  {% if sample.creator %}by {{ sample.creator.name or sample.creator.email }}{% endif %}
+</div>
+
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-3">
+  <div>
+    <h2 class="mb-1">{{ sample.name }}</h2>
+    <div class="text-muted">
+      Project:
+      <a href="{{ url_for('view_project', project_id=sample.project.id) }}">{{ sample.project.title }}</a>
+      &middot; Created {{ sample.created_at.strftime('%Y-%m-%d') }}
+    </div>
+  </div>
+  <div class="text-center">
+    <img
+      src="{{ url_for('sample_qr', sample_id=sample.id) }}"
+      alt="QR code for {{ sample.name }}"
+      style="max-width:160px; border: 1px solid var(--bs-border-color); border-radius: .5rem; padding: .25rem;"
+    >
+    <div class="small text-muted mt-1">Scan to open this public page</div>
+  </div>
+</div>
+
+<div class="alert alert-info mt-3">
+  This is a <strong>public, read-only</strong> view. To edit, please sign in.
+</div>
+
+<!-- Breadcrumb / lineage -->
+{% if lineage and lineage|length %}
+  <div class="card card-body mb-3">
+    <div class="small text-muted">
+      Path:
+      {% for n in lineage %}
+        {% if n.id == sample.id %}
+          <strong>{{ n.name }}</strong>
+        {% else %}
+          <a href="{{ url_for('view_sample_public', sample_id=n.id) }}">{{ n.name }}</a>
+        {% endif %}
+        {% if not loop.last %} &raquo; {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+{% endif %}
+
+<!-- Family tree (current highlighted) -->
+<div class="card card-body mb-3">
+  <h5 class="mb-2">Sample Family Tree</h5>
+
+  {% macro render_node(n) -%}
+    <li class="mb-1">
+      {% if n.is_current %}
+        <strong><a href="{{ url_for('view_sample_public', sample_id=n.id) }}">{{ n.name }}</a></strong>
+        <span class="badge bg-primary ms-2">current</span>
+      {% else %}
+        <a href="{{ url_for('view_sample_public', sample_id=n.id) }}">{{ n.name }}</a>
+      {% endif %}
+      {% if n.children and n.children|length %}
+        <ul class="mt-1">
+          {% for c in n.children %}
+            {{ render_node(c) }}
+          {% endfor %}
+        </ul>
+      {% endif %}
+    </li>
+  {%- endmacro %}
+
+  {% if family_tree %}
+    <ul class="mb-0">
+      {{ render_node(family_tree) }}
+    </ul>
+  {% else %}
+    <div class="text-muted">No family data.</div>
+  {% endif %}
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-6">
+
+    <!-- Attributes -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Attributes</h5>
+      <dl class="row mb-0">
+        {% if attr_defs and attr_defs|length %}
+          {% for a in attr_defs %}
+            <dt class="col-4">{{ a.name }}</dt>
+            <dd class="col-8">
+              {% if a.value %}
+                {{ a.value }}{% if a.unit %} <span class="text-muted">({{ a.unit }})</span>{% endif %}
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </dd>
+          {% endfor %}
+        {% else %}
+          <dt class="col-12 text-muted">No attributes defined for this project.</dt>
+        {% endif %}
+      </dl>
+    </div>
+
+    <!-- Documents (read-only) -->
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Documents</h5>
+      <ul class="list-group">
+        {% for d in sample.documents %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span>{{ d.filename }}</span>
+            {% if public_downloads %}
+              <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('download_sample_doc', doc_id=d.id) }}">Download</a>
+            {% endif %}
+          </li>
+        {% else %}
+          <li class="list-group-item">No documents.</li>
+        {% endfor %}
+      </ul>
+      {% if not public_downloads %}
+        <div class="small text-muted mt-2">Downloads require sign-in.</div>
+      {% endif %}
+    </div>
+
+  </div>
+  <div class="col-lg-6">
+
+    <!-- Linked experiments (breadcrumb style) -->
+    {% macro exp_chain(exp) -%}
+      {% if exp.parent %}{{ exp_chain(exp.parent) }} &raquo; {% endif %}
+      <a href="{{ url_for('view_experiment', experiment_id=exp.id) }}">{{ exp.title }}</a>
+    {%- endmacro %}
+
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Linked Experiments</h5>
+      <ul class="list-group">
+        {% for link in sample.experiment_links %}
+          <li class="list-group-item">{{ exp_chain(link.experiment) }}</li>
+        {% else %}
+          <li class="list-group-item">No experiments linked.</li>
+        {% endfor %}
+      </ul>
+      <div class="small text-muted mt-2">Experiment pages require sign-in to edit.</div>
+    </div>
+
+  </div>
+</div>
+
+{% endblock %}

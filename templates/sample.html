@@ -4,6 +4,10 @@
 <p class="mb-3">
   <a href="{{ url_for('list_samples') }}">&larr; Back to samples</a>
 </p>
+<div class="text-muted mb-2">
+  Created {{ sample.created_at.strftime('%Y-%m-%d') }}
+  {% if sample.creator %}by {{ sample.creator.name or sample.creator.email }}{% endif %}
+</div>
 
 <div class="d-flex flex-wrap align-items-start gap-3 mb-3">
   <div class="flex-grow-1">

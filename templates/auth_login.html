@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-5">
+    <div class="card card-body">
+      <h4 class="mb-3">Sign in</h4>
+      <form method="post">
+        <div class="mb-3">
+          <label class="form-label">Email</label>
+          <input class="form-control" name="email" type="email" required autofocus>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Password</label>
+          <input class="form-control" name="password" type="password" required>
+        </div>
+        <button class="btn btn-primary w-100">Sign in</button>
+      </form>
+      <div class="text-center mt-3">
+        <a href="{{ url_for('register') }}">Create an account</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

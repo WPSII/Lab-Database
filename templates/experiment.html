@@ -6,6 +6,11 @@
 </p>
 
 <!-- Header -->
+<div class="text-muted mb-2">
+  Created {{ experiment.created_at.strftime('%Y-%m-%d') }}
+  {% if experiment.creator %}by {{ experiment.creator.name or experiment.creator.email }}{% endif %}
+</div>
+
 <div class="card card-body mb-3">
   <h2 class="mb-1">{{ experiment.title }}</h2>
   <div class="text-muted">

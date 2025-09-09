@@ -7,7 +7,15 @@ from flask import jsonify
 import json
 import qrcode
 import io
-from flask import send_file
+from flask import send_file, session
+from flask_login import (
+    LoginManager, UserMixin, login_user, login_required,
+    logout_user, current_user
+)
+from werkzeug.security import generate_password_hash, check_password_hash
+
+def _uid():
+    return current_user.id if getattr(current_user, "is_authenticated", False) else None
 
 
 # --- Config ---
@@ -16,6 +24,13 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 ALLOWED_EXTENSIONS = {"pdf", "doc", "docx", "txt", "csv", "png", "jpg", "jpeg"}
 
 app = Flask(__name__)
+login_manager = LoginManager(app)
+login_manager.login_view = "auth_login"  # where to send non-authed users
+
+@login_manager.user_loader
+def load_user(user_id: str):
+    return User.query.get(int(user_id))
+
 app.config["SECRET_KEY"] = "change-me"
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + os.path.join(BASE_DIR, "lab.db")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -25,13 +40,89 @@ app.config["MAX_CONTENT_LENGTH"] = 256 * 1024 * 1024  # 256 MB
 db = SQLAlchemy(app)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+from flask import request, redirect, url_for
+from flask_login import current_user
+
+# Endpoints that should stay publicly accessible
+LOGIN_EXEMPT = {
+    "auth_login",        # GET/POST login page
+    "auth_register",     # GET/POST signup page
+    "static",       # bootstrap/css/js
+    "view_sample_public",   # new public view
+    "view_sample_public_short",  # <-- add this
+    "sample_qr",            # QR image itself
+}
+
+@app.before_request
+def require_login_for_all_pages():
+    # When Flask can't resolve an endpoint (404), request.endpoint may be None
+    ep = request.endpoint or ""
+    if ep in LOGIN_EXEMPT:
+        return  # allow through
+
+    # If user is signed in, allow
+    if current_user.is_authenticated:
+        return
+
+    # Otherwise, bounce to login with ?next=
+    return redirect(url_for("auth_login", next=request.url))
+
 
 # --- Models ---
+# --- Visibility constants ---
+VIS_INHERIT = "inherit"   # use database default
+VIS_PRIVATE = "private"   # login + membership required
+VIS_PUBLIC  = "public"    # no login required to view
+
+# --- Database / Workspace ---
+class Database(db.Model):
+    __tablename__ = "database"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(160), nullable=False, unique=True)
+    owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    default_visibility = db.Column(db.String(16), default=VIS_PRIVATE)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    owner = db.relationship("User")
+    projects = db.relationship("Project", backref="database", cascade="all, delete-orphan")
+
+
+class DatabaseMember(db.Model):
+    __tablename__ = "database_member"
+    id = db.Column(db.Integer, primary_key=True)
+    database_id = db.Column(db.Integer, db.ForeignKey("database.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    role = db.Column(db.String(16), nullable=False, default="viewer")  # owner, admin, editor, viewer
+    added_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    database = db.relationship("Database", backref=db.backref("members", cascade="all, delete-orphan"))
+    user     = db.relationship("User")
+
+
+class User(db.Model, UserMixin):
+    __tablename__ = "user"
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(255), unique=True, nullable=False)
+    name = db.Column(db.String(120))
+    password_hash = db.Column(db.String(255), nullable=False)
+    is_admin = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def set_password(self, pw: str) -> None:
+        self.password_hash = generate_password_hash(pw)
+
+    def check_password(self, pw: str) -> bool:
+        return check_password_hash(self.password_hash, pw)
+
+
 class Project(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(160), nullable=False)
     description = db.Column(db.Text, default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    pi_user_id = db.Column(db.Integer, db.ForeignKey("user.id"))
+    pi = db.relationship("User", foreign_keys=[pi_user_id])
 
     experiments = db.relationship(
         "Experiment", backref="project", cascade="all, delete-orphan"
@@ -39,6 +130,10 @@ class Project(db.Model):
     samples = db.relationship(
         "Sample", backref="project", cascade="all, delete-orphan"
     )
+    database_id = db.Column(db.Integer, db.ForeignKey("database.id"))   # NEW
+    visibility  = db.Column(db.String(16), default=VIS_INHERIT)         # NEW
+    creator_id  = db.Column(db.Integer, db.ForeignKey("user.id"))       # NEW
+    creator     = db.relationship("User", foreign_keys=[creator_id])     # NEW
 
 
 class Experiment(db.Model):
@@ -58,6 +153,9 @@ class Experiment(db.Model):
 
     documents = db.relationship("Document", backref="experiment", cascade="all, delete-orphan")
     # sample_links is via backref on SampleExperiment
+    creator_id  = db.Column(db.Integer, db.ForeignKey("user.id"))       # NEW
+    creator     = db.relationship("User", foreign_keys=[creator_id])     # NEW
+
 
 
 class Document(db.Model):
@@ -87,6 +185,8 @@ class Sample(db.Model):
 
     documents = db.relationship("SampleDocument", backref="sample", cascade="all, delete-orphan")
     experiment_links = db.relationship("SampleExperiment", backref="sample", cascade="all, delete-orphan")
+    creator_id  = db.Column(db.Integer, db.ForeignKey("user.id"))       # NEW
+    creator     = db.relationship("User", foreign_keys=[creator_id])     # NEW
 
 
 class SampleDocument(db.Model):
@@ -159,6 +259,28 @@ class SampleAttributeValue(db.Model):
 
 
 # --- Helpers ---
+def is_project_public(project):
+    if project.visibility == VIS_PUBLIC:
+        return True
+    if project.visibility == VIS_INHERIT and project.database and project.database.default_visibility == VIS_PUBLIC:
+        return True
+    return False
+
+def db_role(user, database_id):
+    if not user or not getattr(user, "is_authenticated", False):
+        return None
+    m = DatabaseMember.query.filter_by(database_id=database_id, user_id=user.id).first()
+    return m.role if m else None
+
+def can_view_project(project, user):
+    if is_project_public(project):
+        return True
+    return db_role(user, project.database_id) is not None
+
+def can_edit_project(project, user):
+    role = db_role(user, project.database_id)
+    return role in ("owner", "admin", "editor") or (project.creator_id and user and getattr(user, "is_authenticated", False) and user.id == project.creator_id)
+
 def allowed_file(fn: str) -> bool:
     return "." in fn and fn.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -289,6 +411,35 @@ def get_project_attrs(project_id: int):
             .order_by(ProjectSampleAttribute.sort_order.asc(), ProjectSampleAttribute.id.asc())
             .all())
 
+def get_db_members_for_project(project):
+    """Return list of Users who are members of the project's database."""
+    # Adjust names if your membership model differs
+    try:
+        return (User.query
+                .join(DatabaseMember, DatabaseMember.user_id == User.id)
+                .filter(DatabaseMember.database_id == project.database_id)
+                .order_by(User.name.asc())
+                .all())
+    except Exception:
+        # Fallback: no membership model available – return empty list
+        return []
+    
+def can_manage_project(project):
+    """Allow DB owner/admin or project creator to set PI."""
+    if not current_user.is_authenticated:
+        return False
+    # if you track creator on Project:
+    if getattr(project, "creator_id", None) == current_user.id:
+        return True
+    try:
+        memb = DatabaseMember.query.filter_by(
+            database_id=project.database_id, user_id=current_user.id
+        ).first()
+        return bool(memb and memb.role in ("owner", "admin"))
+    except Exception:
+        # If no membership model yet, be permissive (or return False)
+        return True
+    
 def get_full_experiment_chain(exp):
     """Return [root ... selected] for the given experiment."""
     chain = []
@@ -348,10 +499,163 @@ def serialize_experiment_tree(node, current_id):
 
 
 # --- Routes ---
+# ---- Login ----
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        email = (request.form.get("email") or "").strip().lower()
+        pw    = request.form.get("password") or ""
+        user = User.query.filter_by(email=email).first()
+        if user and user.check_password(pw):
+            login_user(user)
+            flash("Welcome back!", "ok")
+            next_url = request.args.get("next") or url_for("index")
+            return redirect(next_url)
+        flash("Invalid email or password.", "error")
+    return render_template("login.html")
+
+@app.route("/logout")
+@login_required
+def logout():
+    logout_user()
+    flash("Signed out.", "ok")
+    return redirect(url_for("index"))
+
+@app.route("/register", methods=["GET","POST"])
+def register():
+    # Optional: lock this down later; for now allows first users to sign up
+    if request.method == "POST":
+        email = (request.form.get("email") or "").strip().lower()
+        name  = (request.form.get("name") or "").strip()
+        pw    = request.form.get("password") or ""
+        if not email or not pw:
+            flash("Email and password required.", "error")
+            return redirect(url_for("auth_register"))
+        if User.query.filter_by(email=email).first():
+            flash("Email already in use.", "error")
+            return redirect(url_for("auth_register"))
+        u = User(email=email, name=name)
+        u.set_password(pw)
+        db.session.add(u); db.session.commit()
+        flash("Account created. You can now sign in.", "ok")
+        return redirect(url_for("login"))
+    return render_template("auth_register.html")
+
+
+@app.route("/auth/login", methods=["GET", "POST"])
+def auth_login():
+    if current_user.is_authenticated:
+        return redirect(url_for("index"))
+
+    if request.method == "POST":
+        email = (request.form.get("email") or "").strip().lower()
+        password = request.form.get("password") or ""
+        remember = bool(request.form.get("remember"))
+
+        user = User.query.filter_by(email=email).first()
+        if not user or not user.check_password(password):
+            flash("Invalid email or password.", "error")
+            return redirect(url_for("auth_login"))
+
+        login_user(user, remember=remember)
+        next_url = request.args.get("next") or url_for("index")
+        return redirect(next_url)
+
+    return render_template("auth_login.html")
+
+
+@app.route("/auth/register", methods=["GET", "POST"])
+def auth_register():
+    # Optional: set a config flag to disable open registration
+    # if not app.config.get("ALLOW_REGISTRATION", True): abort(403)
+
+    if current_user.is_authenticated:
+        return redirect(url_for("index"))
+
+    if request.method == "POST":
+        name = (request.form.get("name") or "").strip()
+        email = (request.form.get("email") or "").strip().lower()
+        password = request.form.get("password") or ""
+        confirm  = request.form.get("confirm") or ""
+
+        if not email or not password:
+            flash("Email and password are required.", "error")
+            return redirect(url_for("auth_register"))
+        if password != confirm:
+            flash("Passwords do not match.", "error")
+            return redirect(url_for("auth_register"))
+        if User.query.filter_by(email=email).first():
+            flash("That email is already registered.", "error")
+            return redirect(url_for("auth_register"))
+
+        u = User(name=name or email.split("@")[0], email=email)
+        u.set_password(password)
+        db.session.add(u)
+        db.session.commit()
+        login_user(u)
+        flash("Welcome!", "ok")
+        return redirect(url_for("index"))
+
+    return render_template("auth_register.html")
+
+
+@app.post("/auth/logout")
+@login_required
+def auth_logout():
+    logout_user()
+    flash("Signed out.", "ok")
+    return redirect(url_for("index"))
+
 @app.route("/")
 def index():
     projects = Project.query.order_by(Project.created_at.desc()).all()
     return render_template("index.html", projects=projects)  # expects {{ projects }}
+
+from flask import abort
+
+@app.before_request
+def require_login_for_all_pages():
+    ep = request.endpoint or ""
+
+    # Allow some endpoints without login
+    if ep in LOGIN_EXEMPT:
+        return
+
+    # Allow document download if explicitly allowed
+    if ep == "download_sample_doc" and app.config.get("PUBLIC_DOWNLOADS"):
+        return
+
+    if current_user.is_authenticated:
+        return
+    return redirect(url_for("login", next=request.url))
+
+
+@app.post("/project/<int:project_id>/set-pi")
+@login_required
+def set_project_pi(project_id):
+    project = Project.query.get_or_404(project_id)
+
+    if not can_manage_project(project):
+        abort(403)
+
+    uid = request.form.get("pi_user_id", type=int)
+
+    if uid:
+        # must be a member of this project's database
+        members = get_db_members_for_project(project)
+        member_ids = {u.id for u in members}
+        if uid not in member_ids:
+            flash("Selected user is not a member of this database.", "error")
+            return redirect(url_for("view_project", project_id=project.id))
+        project.pi_user_id = uid
+    else:
+        # allow clearing PI
+        project.pi_user_id = None
+
+    db.session.commit()
+    flash("PI updated.", "ok")
+    return redirect(url_for("view_project", project_id=project.id))
+
 
 # ---- Sample Attributes ----
 @app.route("/project/<int:project_id>/sample-attrs/add", methods=["POST"])
@@ -448,7 +752,7 @@ def create_project():
     if not title:
         flash("Project title is required.", "error")
         return redirect(url_for("index"))
-    project = Project(title=title, description=desc)
+    project = Project(title=title, description=desc, creator_id=_uid())
     db.session.add(project)
     db.session.commit()
     return redirect(url_for("view_project", project_id=project.id))
@@ -457,13 +761,24 @@ def create_project():
 @app.route("/project/<int:project_id>")
 def view_project(project_id):
     project = Project.query.get_or_404(project_id)
+
     roots = (Sample.query
              .filter_by(project_id=project.id, parent_id=None)
              .order_by(Sample.name.asc())
              .all())
-    sample_tree = [serialize_sample_tree(r, None) for r in roots]
-    current_id=None
-    return render_template("project.html", project=project, sample_tree=sample_tree)
+    sample_tree = [serialize_sample_tree(r) for r in roots]
+
+    pi_candidates = get_db_members_for_project(project)
+    can_manage = can_manage_project(project)
+
+    return render_template(
+        "project.html",
+        project=project,
+        sample_tree=sample_tree,
+        pi_candidates=pi_candidates,
+        can_manage=can_manage,
+    )
+
 
 
 
@@ -475,7 +790,7 @@ def create_experiment(project_id):
     if not title:
         flash("Experiment title is required.", "error")
         return redirect(url_for("view_project", project_id=project_id))
-    experiment = Experiment(project=project, title=title, description=desc)
+    experiment = Experiment(project=project, title=title, description=desc, creator_id=_uid())
     db.session.add(experiment)
     db.session.commit()
     return redirect(url_for("view_experiment", experiment_id=experiment.id))
@@ -691,7 +1006,7 @@ def create_sample():
         return redirect(url_for("list_samples", view=request.args.get("view","project")))
 
     # create the sample
-    sample = Sample(project_id=project_id, parent_id=(parent.id if parent else None), name=name)
+    sample = Sample(project_id=project_id, parent_id=(parent.id if parent else None), name=name, creator_id=_uid())
     db.session.add(sample); db.session.commit()
 
     # persist attribute values
@@ -710,22 +1025,55 @@ def create_sample():
     flash("Sample created.", "ok")
     return redirect(url_for("view_sample", sample_id=sample.id))
 
+@app.get("/public/sample/<int:sample_id>")
+def view_sample_public(sample_id):
+    sample = Sample.query.get_or_404(sample_id)
+
+    # lineage & tree
+    lineage = get_sample_lineage(sample)
+    family_tree = serialize_sample_tree(get_sample_root(sample), sample.id)
+
+    # attributes (read-only)
+    attrs = get_project_attrs(sample.project_id)
+    val_by_attr = {v.attribute_id: v for v in sample.attribute_values}
+    attr_defs = []
+    for a in attrs:
+        v = val_by_attr.get(a.id)
+        attr_defs.append({
+            "id": a.id,
+            "name": a.name,
+            "unit": getattr(a, "unit", None),  # safe if unit column exists
+            "value": (v.value if v and v.value else None),
+        })
+
+    # whether to allow file downloads to unauthenticated users
+    public_downloads = bool(app.config.get("PUBLIC_DOWNLOADS", False))
+
+    return render_template(
+        "sample_public.html",
+        sample=sample,
+        lineage=lineage,
+        family_tree=family_tree,
+        attr_defs=attr_defs,
+        public_downloads=public_downloads,
+    )
+
+
+@app.get("/s/<int:sample_id>")
+def view_sample_public_short(sample_id):
+    return view_sample_public(sample_id)
+
+
 @app.route("/sample/<int:sample_id>/qr")
 def sample_qr(sample_id):
     sample = Sample.query.get_or_404(sample_id)
-    # Generate the external URL for this sample
-    url = url_for("view_sample", sample_id=sample.id, _external=True)
-
-    # Create QR code
+    url = url_for("view_sample_public", sample_id=sample.id, _external=True)
     img = qrcode.make(url)
-
-    # Save to memory buffer
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
-
-    # Return as PNG response
     return send_file(buf, mimetype="image/png")
+
 
 @app.route("/sample/<int:sample_id>/split", methods=["POST"])
 def split_sample(sample_id):
@@ -758,6 +1106,7 @@ def split_sample(sample_id):
         project_id=parent.project_id,
         parent_id=parent.id,
         name=child_name,
+        creator_id=_uid(),
     )
     db.session.add(child); db.session.commit()
 
@@ -938,7 +1287,8 @@ def create_parent_experiment(experiment_id):
     parent = Experiment(
         project_id=current.project_id,
         title=title,
-        description=details
+        description=details,
+        creator_id=_uid()
     )
     db.session.add(parent)
     db.session.flush()  # get parent.id without full commit
@@ -962,7 +1312,8 @@ def create_child_experiment(experiment_id):
         project_id=current.project_id,
         title=title,
         description=details,
-        parent=current
+        parent=current,
+        creator_id=_uid()
     )
     db.session.add(child)
     db.session.commit()
@@ -1053,44 +1404,44 @@ def edit_sample(sample_id):
 
 # --- Bootstrap DB on first run ---
 
-# --- Bootstrap DB on first run & light migrations ---
+
+
 with app.app_context():
     db.create_all()
 
-    from sqlalchemy import inspect, text
-    inspector = inspect(db.engine)
+    from sqlalchemy.exc import OperationalError
 
-    def has_table(t):
-        try:
-            return inspector.has_table(t)
-        except Exception:
-            return False
-
-    def has_col(t, col):
-        try:
-            return any(c["name"] == col for c in inspector.get_columns(t))
-        except Exception:
-            return False
-
-    def add_col(sql):
-        # Run a simple ALTER TABLE safely
+    def add_column_if_missing(table: str, column: str, ddl: str):
         with db.engine.begin() as conn:
-            conn.execute(text(sql))
+            cols = [row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()]
+            if column in cols:
+                return
+            try:
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+            except OperationalError as e:
+                if "duplicate column name" in str(e).lower():
+                    pass
+                else:
+                    raise
 
-    # Experiment parent/child
-    if has_table("experiment") and not has_col("experiment", "parent_id"):
-        add_col("ALTER TABLE experiment ADD COLUMN parent_id INTEGER")
+    # Project
+    add_column_if_missing("project", "pi_user_id",    "pi_user_id INTEGER")
+    add_column_if_missing("project", "database_id",   "database_id INTEGER")
+    add_column_if_missing("project", "visibility",    "visibility TEXT")
+    add_column_if_missing("project", "creator_id",    "creator_id INTEGER")
 
-    # Project sample attributes: units support
-    if has_table("project_sample_attribute") and not has_col("project_sample_attribute", "unit"):
-        add_col("ALTER TABLE project_sample_attribute ADD COLUMN unit VARCHAR(64)")
+    # Experiment
+    add_column_if_missing("experiment", "parent_id",  "parent_id INTEGER")
+    add_column_if_missing("experiment", "creator_id", "creator_id INTEGER")
 
-    # Sample attribute values: placeholder + timestamp
-    if has_table("sample_attribute_value") and not has_col("sample_attribute_value", "is_placeholder"):
-        add_col("ALTER TABLE sample_attribute_value ADD COLUMN is_placeholder BOOLEAN DEFAULT 0")
+    # Sample
+    add_column_if_missing("sample", "parent_id",      "parent_id INTEGER")
+    add_column_if_missing("sample", "creator_id",     "creator_id INTEGER")
 
-    if has_table("sample_attribute_value") and not has_col("sample_attribute_value", "updated_at"):
-        add_col("ALTER TABLE sample_attribute_value ADD COLUMN updated_at DATETIME")
+    # Attributes / values
+    add_column_if_missing("project_sample_attribute", "unit", "unit TEXT")
+    add_column_if_missing("sample_attribute_value",   "is_placeholder", "is_placeholder BOOLEAN")
+    add_column_if_missing("sample_attribute_value",   "updated_at",     "updated_at DATETIME")
 
 
     

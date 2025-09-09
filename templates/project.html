@@ -6,6 +6,44 @@
 </p>
 
 <!-- Project header / ribbon -->
+<div class="text-muted mb-3">
+  Created {{ project.created_at.strftime('%Y-%m-%d') }}
+  {% if project.creator %}by {{ project.creator.name or project.creator.email }}{% else %}(creator unknown){% endif %}
+  {% if project.visibility == 'public' %} · <span class="badge text-bg-success">Public</span>
+  {% elif project.visibility == 'private' %} · <span class="badge text-bg-secondary">Private</span>
+  {% else %} · <span class="badge text-bg-info">Inherits database</span>
+  {% endif %}
+</div>
+<h2 class="mb-1 d-flex align-items-center gap-2">
+  {{ project.title }}
+  <span class="badge text-bg-info">
+    PI: {{ project.pi.name if project.pi else "Unassigned" }}
+  </span>
+</h2>
+{% if can_manage %}
+<div class="card card-body mb-3" id="project-pi">
+  <h5 class="mb-2">Principal Investigator</h5>
+  <form method="post" action="{{ url_for('set_project_pi', project_id=project.id) }}">
+    <div class="row g-2 align-items-end">
+      <div class="col-md-6">
+        <label class="form-label">Assign PI (database members)</label>
+        <select class="form-select" name="pi_user_id">
+          <option value="">— Unassigned —</option>
+          {% for u in pi_candidates %}
+            <option value="{{ u.id }}" {% if project.pi and project.pi.id == u.id %}selected{% endif %}>
+              {{ u.name or u.email }}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <button class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </form>
+</div>
+{% endif %}
+
 <div class="card card-body mb-3">
   <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
     <div>
