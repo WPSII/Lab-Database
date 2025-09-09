@@ -18,8 +18,8 @@ This project is set up to be easy to install and run locally, with a build scrip
 
 ### 1. Clone the Repository
 ```powershell
-git clone https://github.com/WPSII/Clean-Database.git
-cd Clean-Database
+git clone https://github.com/WPSII/Lab-Database.git
+cd Lab-Database
 ```
 
 ### 2. Run the Build Script
