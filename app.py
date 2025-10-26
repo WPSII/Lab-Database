@@ -1,3 +1,6 @@
+from flask import abort
+from flask_login import current_user
+from flask import request, redirect, url_for
 import os
 from datetime import datetime
 from flask import Flask, request, redirect, url_for, render_template, send_from_directory, flash
@@ -14,6 +17,7 @@ from flask_login import (
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
+
 def _uid():
     return current_user.id if getattr(current_user, "is_authenticated", False) else None
 
@@ -27,12 +31,15 @@ app = Flask(__name__)
 login_manager = LoginManager(app)
 login_manager.login_view = "auth_login"  # where to send non-authed users
 
+
 @login_manager.user_loader
 def load_user(user_id: str):
     return User.query.get(int(user_id))
 
+
 app.config["SECRET_KEY"] = "change-me"
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + os.path.join(BASE_DIR, "lab.db")
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + \
+    os.path.join(BASE_DIR, "lab.db")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 256 * 1024 * 1024  # 256 MB
@@ -40,8 +47,6 @@ app.config["MAX_CONTENT_LENGTH"] = 256 * 1024 * 1024  # 256 MB
 db = SQLAlchemy(app)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-from flask import request, redirect, url_for
-from flask_login import current_user
 
 # Endpoints that should stay publicly accessible
 LOGIN_EXEMPT = {
@@ -52,6 +57,7 @@ LOGIN_EXEMPT = {
     "view_sample_public_short",  # <-- add this
     "sample_qr",            # QR image itself
 }
+
 
 @app.before_request
 def require_login_for_all_pages():
@@ -72,9 +78,11 @@ def require_login_for_all_pages():
 # --- Visibility constants ---
 VIS_INHERIT = "inherit"   # use database default
 VIS_PRIVATE = "private"   # login + membership required
-VIS_PUBLIC  = "public"    # no login required to view
+VIS_PUBLIC = "public"    # no login required to view
 
 # --- Database / Workspace ---
+
+
 class Database(db.Model):
     __tablename__ = "database"
     id = db.Column(db.Integer, primary_key=True)
@@ -84,19 +92,23 @@ class Database(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     owner = db.relationship("User")
-    projects = db.relationship("Project", backref="database", cascade="all, delete-orphan")
+    projects = db.relationship(
+        "Project", backref="database", cascade="all, delete-orphan")
 
 
 class DatabaseMember(db.Model):
     __tablename__ = "database_member"
     id = db.Column(db.Integer, primary_key=True)
-    database_id = db.Column(db.Integer, db.ForeignKey("database.id"), nullable=False)
+    database_id = db.Column(db.Integer, db.ForeignKey(
+        "database.id"), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
-    role = db.Column(db.String(16), nullable=False, default="viewer")  # owner, admin, editor, viewer
+    # owner, admin, editor, viewer
+    role = db.Column(db.String(16), nullable=False, default="viewer")
     added_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    database = db.relationship("Database", backref=db.backref("members", cascade="all, delete-orphan"))
-    user     = db.relationship("User")
+    database = db.relationship("Database", backref=db.backref(
+        "members", cascade="all, delete-orphan"))
+    user = db.relationship("User")
 
 
 class User(db.Model, UserMixin):
@@ -131,14 +143,15 @@ class Project(db.Model):
         "Sample", backref="project", cascade="all, delete-orphan"
     )
     database_id = db.Column(db.Integer, db.ForeignKey("database.id"))   # NEW
-    visibility  = db.Column(db.String(16), default=VIS_INHERIT)         # NEW
-    creator_id  = db.Column(db.Integer, db.ForeignKey("user.id"))       # NEW
-    creator     = db.relationship("User", foreign_keys=[creator_id])     # NEW
+    visibility = db.Column(db.String(16), default=VIS_INHERIT)         # NEW
+    creator_id = db.Column(db.Integer, db.ForeignKey("user.id"))       # NEW
+    creator = db.relationship("User", foreign_keys=[creator_id])     # NEW
 
 
 class Experiment(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey(
+        "project.id"), nullable=False)
     title = db.Column(db.String(160), nullable=False)
     description = db.Column(db.Text, default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -151,18 +164,20 @@ class Experiment(db.Model):
         backref=db.backref("children", cascade="all, delete-orphan")
     )
 
-    documents = db.relationship("Document", backref="experiment", cascade="all, delete-orphan")
+    documents = db.relationship(
+        "Document", backref="experiment", cascade="all, delete-orphan")
     # sample_links is via backref on SampleExperiment
-    creator_id  = db.Column(db.Integer, db.ForeignKey("user.id"))       # NEW
-    creator     = db.relationship("User", foreign_keys=[creator_id])     # NEW
-
+    creator_id = db.Column(db.Integer, db.ForeignKey("user.id"))       # NEW
+    creator = db.relationship("User", foreign_keys=[creator_id])     # NEW
 
 
 class Document(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    experiment_id = db.Column(db.Integer, db.ForeignKey("experiment.id"), nullable=False)
+    experiment_id = db.Column(db.Integer, db.ForeignKey(
+        "experiment.id"), nullable=False)
     filename = db.Column(db.String(255), nullable=False)     # original name
-    stored_path = db.Column(db.String(500), nullable=False)  # absolute path on disk
+    # absolute path on disk
+    stored_path = db.Column(db.String(500), nullable=False)
     mimetype = db.Column(db.String(120))
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -170,9 +185,11 @@ class Document(db.Model):
 # --- Sample models ---
 class Sample(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey(
+        "project.id"), nullable=False)
     # NEW:
-    parent_id = db.Column(db.Integer, db.ForeignKey("sample.id"))  # nullable root
+    parent_id = db.Column(db.Integer, db.ForeignKey(
+        "sample.id"))  # nullable root
     parent = db.relationship("Sample",
                              remote_side=[id],
                              backref=db.backref("children", cascade="all, delete-orphan"))
@@ -183,19 +200,23 @@ class Sample(db.Model):
     notes = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    documents = db.relationship("SampleDocument", backref="sample", cascade="all, delete-orphan")
-    experiment_links = db.relationship("SampleExperiment", backref="sample", cascade="all, delete-orphan")
-    creator_id  = db.Column(db.Integer, db.ForeignKey("user.id"))       # NEW
-    creator     = db.relationship("User", foreign_keys=[creator_id])     # NEW
+    documents = db.relationship(
+        "SampleDocument", backref="sample", cascade="all, delete-orphan")
+    experiment_links = db.relationship(
+        "SampleExperiment", backref="sample", cascade="all, delete-orphan")
+    creator_id = db.Column(db.Integer, db.ForeignKey("user.id"))       # NEW
+    creator = db.relationship("User", foreign_keys=[creator_id])     # NEW
 
 
 class SampleDocument(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    sample_id = db.Column(db.Integer, db.ForeignKey("sample.id"), nullable=False)
+    sample_id = db.Column(db.Integer, db.ForeignKey(
+        "sample.id"), nullable=False)
     filename = db.Column(db.String(255), nullable=False)
     stored_path = db.Column(db.String(500), nullable=False)
     mimetype = db.Column(db.String(120))
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 
 @app.post("/experiment/<int:experiment_id>/edit")
 def edit_experiment_details(experiment_id):
@@ -215,9 +236,12 @@ def edit_experiment_details(experiment_id):
 class SampleExperiment(db.Model):
     """Many-to-many link: a Sample can be acted on by many Experiments (with a role)."""
     id = db.Column(db.Integer, primary_key=True)
-    sample_id = db.Column(db.Integer, db.ForeignKey("sample.id"), nullable=False)
-    experiment_id = db.Column(db.Integer, db.ForeignKey("experiment.id"), nullable=False)
-    role = db.Column(db.String(40), nullable=False, default="other")  # irradiation, corrosion, polishing, other
+    sample_id = db.Column(db.Integer, db.ForeignKey(
+        "sample.id"), nullable=False)
+    experiment_id = db.Column(db.Integer, db.ForeignKey(
+        "experiment.id"), nullable=False)
+    # irradiation, corrosion, polishing, other
+    role = db.Column(db.String(40), nullable=False, default="other")
     notes = db.Column(db.Text)
 
     experiment = db.relationship(
@@ -227,16 +251,21 @@ class SampleExperiment(db.Model):
 # --- Project-defined Sample Attributes ---
 
 # --- Project-defined Sample Attributes ---
+
+
 class ProjectSampleAttribute(db.Model):
     __tablename__ = "project_sample_attribute"
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=False)
+    project_id = db.Column(db.Integer, db.ForeignKey(
+        "project.id"), nullable=False)
     name = db.Column(db.String(100), nullable=False)
-    field_type = db.Column(db.String(20), default="text")   # "text", "number", "select", "date"
+    # "text", "number", "select", "date"
+    field_type = db.Column(db.String(20), default="text")
     required = db.Column(db.Boolean, default=False)
     choices_json = db.Column(db.Text)                       # for select
     sort_order = db.Column(db.Integer, default=0)
-    unit = db.Column(db.String(32))                         # <-- NEW (optional)
+    # <-- NEW (optional)
+    unit = db.Column(db.String(32))
 
     project = db.relationship(
         "Project",
@@ -247,14 +276,18 @@ class ProjectSampleAttribute(db.Model):
 class SampleAttributeValue(db.Model):
     __tablename__ = "sample_attribute_value"
     id = db.Column(db.Integer, primary_key=True)
-    sample_id = db.Column(db.Integer, db.ForeignKey("sample.id"), nullable=False)
-    attribute_id = db.Column(db.Integer, db.ForeignKey("project_sample_attribute.id"), nullable=False)
+    sample_id = db.Column(db.Integer, db.ForeignKey(
+        "sample.id"), nullable=False)
+    attribute_id = db.Column(db.Integer, db.ForeignKey(
+        "project_sample_attribute.id"), nullable=False)
     value = db.Column(db.Text)
     # NEW fields you added:
     is_placeholder = db.Column(db.Boolean, default=False)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = db.Column(
+        db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    sample = db.relationship("Sample", backref=db.backref("attribute_values", cascade="all, delete-orphan"))
+    sample = db.relationship("Sample", backref=db.backref(
+        "attribute_values", cascade="all, delete-orphan"))
     attribute = db.relationship("ProjectSampleAttribute")
 
 
@@ -266,20 +299,25 @@ def is_project_public(project):
         return True
     return False
 
+
 def db_role(user, database_id):
     if not user or not getattr(user, "is_authenticated", False):
         return None
-    m = DatabaseMember.query.filter_by(database_id=database_id, user_id=user.id).first()
+    m = DatabaseMember.query.filter_by(
+        database_id=database_id, user_id=user.id).first()
     return m.role if m else None
+
 
 def can_view_project(project, user):
     if is_project_public(project):
         return True
     return db_role(user, project.database_id) is not None
 
+
 def can_edit_project(project, user):
     role = db_role(user, project.database_id)
     return role in ("owner", "admin", "editor") or (project.creator_id and user and getattr(user, "is_authenticated", False) and user.id == project.creator_id)
+
 
 def allowed_file(fn: str) -> bool:
     return "." in fn and fn.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -296,6 +334,7 @@ def sample_upload_dir(sample_id: int) -> str:
     os.makedirs(d, exist_ok=True)
     return d
 
+
 def build_lineage(sample):
     chain = []
     cur = sample.parent
@@ -303,6 +342,7 @@ def build_lineage(sample):
         chain.insert(0, cur)  # root → ... → parent
         cur = cur.parent
     return chain
+
 
 def build_experiment_lineage(exp):
     """Return list [root ... parent] for breadcrumb display."""
@@ -312,6 +352,7 @@ def build_experiment_lineage(exp):
         chain.insert(0, cur)
         cur = cur.parent
     return chain
+
 
 def get_experiment_descendant_ids(exp):
     """All descendant experiment IDs (to block cycles when reparenting)."""
@@ -327,6 +368,7 @@ def get_experiment_descendant_ids(exp):
 
 # --- Experiment tree helpers ---
 
+
 def get_ancestors(exp):
     """Yield ancestors from parent up to root."""
     seen = set()
@@ -335,6 +377,7 @@ def get_ancestors(exp):
         yield cur
         seen.add(cur.id)
         cur = cur.parent
+
 
 def get_descendants(exp):
     """Yield all descendants (DFS)."""
@@ -348,17 +391,20 @@ def get_descendants(exp):
         yield n
         stack.extend(n.children)
 
+
 def would_create_cycle_as_parent(current, candidate_parent):
     """Invalid if parent == current or parent is a descendant of current."""
     if candidate_parent.id == current.id:
         return True
     return any(d.id == candidate_parent.id for d in get_descendants(current))
 
+
 def would_create_cycle_as_child(current, candidate_child):
     """Invalid if child == current or child is an ancestor of current."""
     if candidate_child.id == current.id:
         return True
     return any(a.id == candidate_child.id for a in get_ancestors(current))
+
 
 def build_linked_sample_tree(experiment):
     """
@@ -394,6 +440,7 @@ def build_linked_sample_tree(experiment):
     roots.sort(key=lambda n: (n["sample"].name or "").lower())
     return roots
 
+
 def serialize_sample_tree(node, current_id=None, linked_ids=None):
     """Convert Sample tree to a dict usable by Jinja recursion."""
     children = sorted(node.children, key=lambda s: (s.name or "").lower())
@@ -412,6 +459,7 @@ def get_project_attrs(project_id: int):
             .order_by(ProjectSampleAttribute.sort_order.asc(), ProjectSampleAttribute.id.asc())
             .all())
 
+
 def get_db_members_for_project(project):
     """Return list of Users who are members of the project's database."""
     # Adjust names if your membership model differs
@@ -424,7 +472,8 @@ def get_db_members_for_project(project):
     except Exception:
         # Fallback: no membership model available – return empty list
         return []
-    
+
+
 def can_manage_project(project):
     """Allow DB owner/admin or project creator to set PI."""
     if not current_user.is_authenticated:
@@ -440,7 +489,8 @@ def can_manage_project(project):
     except Exception:
         # If no membership model yet, be permissive (or return False)
         return True
-    
+
+
 def get_full_experiment_chain(exp):
     """Return [root ... selected] for the given experiment."""
     chain = []
@@ -449,6 +499,7 @@ def get_full_experiment_chain(exp):
         chain.insert(0, cur)
         cur = cur.parent  # requires Experiment.parent from your parent/child work
     return chain
+
 
 def link_sample_to_experiment_with_lineage(sample, selected_exp, role="other", notes=""):
     """
@@ -464,7 +515,8 @@ def link_sample_to_experiment_with_lineage(sample, selected_exp, role="other", n
             sample_id=sample.id, experiment_id=exp.id, role=role_here
         ).first()
         if not exists:
-            link_notes = notes if exp.id == selected_exp.id else (notes or f"via {selected_exp.title}")
+            link_notes = notes if exp.id == selected_exp.id else (
+                notes or f"via {selected_exp.title}")
             db.session.add(SampleExperiment(
                 sample_id=sample.id,
                 experiment_id=exp.id,
@@ -472,6 +524,7 @@ def link_sample_to_experiment_with_lineage(sample, selected_exp, role="other", n
                 notes=link_notes
             ))
     db.session.commit()
+
 
 def get_sample_lineage(sample):
     """Return [root, ..., sample]."""
@@ -482,11 +535,13 @@ def get_sample_lineage(sample):
         cur = cur.parent
     return chain
 
+
 def get_sample_root(sample):
     cur = sample
     while cur.parent is not None:
         cur = cur.parent
     return cur
+
 
 def serialize_experiment_tree(node, current_id):
     kids = sorted(node.children, key=lambda e: (e.title or "").lower())
@@ -498,14 +553,13 @@ def serialize_experiment_tree(node, current_id):
     }
 
 
-
 # --- Routes ---
 # ---- Login ----
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
         email = (request.form.get("email") or "").strip().lower()
-        pw    = request.form.get("password") or ""
+        pw = request.form.get("password") or ""
         user = User.query.filter_by(email=email).first()
         if user and user.check_password(pw):
             login_user(user)
@@ -515,32 +569,13 @@ def login():
         flash("Invalid email or password.", "error")
     return render_template("login.html")
 
+
 @app.route("/logout")
 @login_required
 def logout():
     logout_user()
     flash("Signed out.", "ok")
     return redirect(url_for("index"))
-
-@app.route("/register", methods=["GET","POST"])
-def register():
-    # Optional: lock this down later; for now allows first users to sign up
-    if request.method == "POST":
-        email = (request.form.get("email") or "").strip().lower()
-        name  = (request.form.get("name") or "").strip()
-        pw    = request.form.get("password") or ""
-        if not email or not pw:
-            flash("Email and password required.", "error")
-            return redirect(url_for("auth_register"))
-        if User.query.filter_by(email=email).first():
-            flash("Email already in use.", "error")
-            return redirect(url_for("auth_register"))
-        u = User(email=email, name=name)
-        u.set_password(pw)
-        db.session.add(u); db.session.commit()
-        flash("Account created. You can now sign in.", "ok")
-        return redirect(url_for("login"))
-    return render_template("auth_register.html")
 
 
 @app.route("/auth/login", methods=["GET", "POST"])
@@ -577,7 +612,7 @@ def auth_register():
         name = (request.form.get("name") or "").strip()
         email = (request.form.get("email") or "").strip().lower()
         password = request.form.get("password") or ""
-        confirm  = request.form.get("confirm") or ""
+        confirm = request.form.get("confirm") or ""
 
         if not email or not password:
             flash("Email and password are required.", "error")
@@ -607,12 +642,13 @@ def auth_logout():
     flash("Signed out.", "ok")
     return redirect(url_for("index"))
 
+
 @app.route("/")
 def index():
     projects = Project.query.order_by(Project.created_at.desc()).all()
-    return render_template("index.html", projects=projects)  # expects {{ projects }}
+    # expects {{ projects }}
+    return render_template("index.html", projects=projects)
 
-from flask import abort
 
 @app.before_request
 def require_login_for_all_pages():
@@ -693,10 +729,12 @@ def add_sample_attribute(project_id):
         sort_order=sort_order or 0,
         unit=(unit or None),  # <-- NEW
     )
-    db.session.add(attr); db.session.commit()
-       
+    db.session.add(attr)
+    db.session.commit()
+
     # Create placeholder values for all existing samples in this project
-    existing_sample_ids = [sid for (sid,) in db.session.query(Sample.id).filter_by(project_id=project_id)]
+    existing_sample_ids = [sid for (sid,) in db.session.query(
+        Sample.id).filter_by(project_id=project_id)]
     # which samples already have a value for this attr?
     has_val_ids = {sid for (sid,) in db.session.query(SampleAttributeValue.sample_id)
                    .filter_by(attribute_id=attr.id)}
@@ -713,7 +751,8 @@ def add_sample_attribute(project_id):
             created += 1
     db.session.commit()
 
-    flash(f"Sample attribute added. {created} sample(s) marked as needing update.", "ok")
+    flash(f"Sample attribute added. {
+          created} sample(s) marked as needing update.", "ok")
     return redirect(url_for("view_project", project_id=p.id))
 
 
@@ -723,7 +762,8 @@ def delete_sample_attribute(attr_id):
     pid = attr.project_id
 
     # Delete all values for this attribute
-    deleted = SampleAttributeValue.query.filter_by(attribute_id=attr.id).delete(synchronize_session=False)
+    deleted = SampleAttributeValue.query.filter_by(
+        attribute_id=attr.id).delete(synchronize_session=False)
     db.session.delete(attr)
     db.session.commit()
 
@@ -734,6 +774,7 @@ def delete_sample_attribute(attr_id):
 @app.route("/api/project/<int:project_id>/sample-attrs")
 def api_project_sample_attrs(project_id):
     attrs = get_project_attrs(project_id)
+
     def serialize(a: ProjectSampleAttribute):
         return {
             "id": a.id,
@@ -746,6 +787,8 @@ def api_project_sample_attrs(project_id):
     return jsonify([serialize(a) for a in attrs])
 
 # ---- Projects ----
+
+
 @app.route("/projects/create", methods=["POST"])
 def create_project():
     title = request.form.get("title", "").strip()
@@ -781,8 +824,6 @@ def view_project(project_id):
     )
 
 
-
-
 @app.route("/project/<int:project_id>/experiments/create", methods=["POST"])
 def create_experiment(project_id):
     project = Project.query.get_or_404(project_id)
@@ -791,7 +832,8 @@ def create_experiment(project_id):
     if not title:
         flash("Experiment title is required.", "error")
         return redirect(url_for("view_project", project_id=project_id))
-    experiment = Experiment(project=project, title=title, description=desc, creator_id=_uid())
+    experiment = Experiment(project=project, title=title,
+                            description=desc, creator_id=_uid())
     db.session.add(experiment)
     db.session.commit()
     return redirect(url_for("view_experiment", experiment_id=experiment.id))
@@ -820,7 +862,7 @@ def view_experiment(experiment_id):
         e for e in all_exps
         if e.id != exp.id and not would_create_cycle_as_child(exp, e)
     ]
-     # Linked samples: build sample tree but highlight linked ones
+    # Linked samples: build sample tree but highlight linked ones
     linked_ids = {link.sample_id for link in exp.sample_links}
     sample_roots = [s for s in exp.project.samples if not s.parent_id]
     linked_sample_tree = [serialize_sample_tree(r) for r in sample_roots]
@@ -857,6 +899,7 @@ def split_experiment(experiment_id):
     flash("Child experiment created.", "ok")
     return redirect(url_for("view_experiment", experiment_id=child.id))
 
+
 @app.route("/experiment/<int:experiment_id>/reparent", methods=["POST"])
 def reparent_experiment(experiment_id):
     exp = Experiment.query.get_or_404(experiment_id)
@@ -891,6 +934,7 @@ def reparent_experiment(experiment_id):
     db.session.commit()
     flash("Parent updated.", "ok")
     return redirect(url_for("view_experiment", experiment_id=exp.id))
+
 
 @app.route("/experiment/<int:experiment_id>/upload", methods=["POST"])
 def upload_document(experiment_id):
@@ -931,7 +975,8 @@ def upload_document(experiment_id):
 @app.route("/download/<int:doc_id>")
 def download(doc_id):
     d = Document.query.get_or_404(doc_id)
-    directory, name = os.path.dirname(d.stored_path), os.path.basename(d.stored_path)
+    directory, name = os.path.dirname(
+        d.stored_path), os.path.basename(d.stored_path)
     return send_from_directory(directory, name, as_attachment=True, download_name=d.filename)
 
 
@@ -956,7 +1001,8 @@ def list_samples():
     projects = Project.query.order_by(Project.title.asc()).all()
 
     # build roots per project for the tree view
-    roots_by_project = {p.id: [s for s in p.samples if not s.parent_id] for p in projects}
+    roots_by_project = {
+        p.id: [s for s in p.samples if not s.parent_id] for p in projects}
 
     # options for dependent dropdowns
     experiment_opts = [
@@ -979,16 +1025,17 @@ def list_samples():
         view=view,
     )
 
+
 @app.route("/samples/create", methods=["POST"])
 def create_sample():
-    parent_id  = request.form.get("parent_id", type=int)
+    parent_id = request.form.get("parent_id", type=int)
     project_id = request.form.get("project_id", type=int)
-    name       = (request.form.get("name") or "").strip()
+    name = (request.form.get("name") or "").strip()
 
     # NEW: optional experiment link on creation
     experiment_id = request.form.get("experiment_id", type=int)
-    link_role     = (request.form.get("role") or "other").strip().lower()
-    link_notes    = (request.form.get("notes") or "").strip()
+    link_role = (request.form.get("role") or "other").strip().lower()
+    link_notes = (request.form.get("notes") or "").strip()
 
     parent = Sample.query.get(parent_id) if parent_id else None
     if parent:
@@ -1010,27 +1057,33 @@ def create_sample():
         values_to_save.append((a.id, val))
     if missing:
         flash("Missing required attributes: " + ", ".join(missing), "error")
-        return redirect(url_for("list_samples", view=request.args.get("view","project")))
+        return redirect(url_for("list_samples", view=request.args.get("view", "project")))
 
     # create the sample
-    sample = Sample(project_id=project_id, parent_id=(parent.id if parent else None), name=name, creator_id=_uid())
-    db.session.add(sample); db.session.commit()
+    sample = Sample(project_id=project_id, parent_id=(
+        parent.id if parent else None), name=name, creator_id=_uid())
+    db.session.add(sample)
+    db.session.commit()
 
     # persist attribute values
     for attr_id, val in values_to_save:
-        db.session.add(SampleAttributeValue(sample_id=sample.id, attribute_id=attr_id, value=val))
+        db.session.add(SampleAttributeValue(
+            sample_id=sample.id, attribute_id=attr_id, value=val))
     db.session.commit()
 
     # NEW: link to experiment + all ancestors (enforce same-project)
     if experiment_id:
         exp = Experiment.query.get_or_404(experiment_id)
         if exp.project_id != project_id:
-            flash("Selected experiment must belong to the same project as the sample.", "error")
+            flash(
+                "Selected experiment must belong to the same project as the sample.", "error")
         else:
-            link_sample_to_experiment_with_lineage(sample, exp, role=link_role, notes=link_notes)
+            link_sample_to_experiment_with_lineage(
+                sample, exp, role=link_role, notes=link_notes)
 
     flash("Sample created.", "ok")
     return redirect(url_for("view_sample", sample_id=sample.id))
+
 
 @app.get("/public/sample/<int:sample_id>")
 def view_sample_public(sample_id):
@@ -1115,11 +1168,13 @@ def split_sample(sample_id):
         name=child_name,
         creator_id=_uid(),
     )
-    db.session.add(child); db.session.commit()
+    db.session.add(child)
+    db.session.commit()
 
     # Persist attribute values on the child
     for attr_id, val in values.items():
-        db.session.add(SampleAttributeValue(sample_id=child.id, attribute_id=attr_id, value=val))
+        db.session.add(SampleAttributeValue(
+            sample_id=child.id, attribute_id=attr_id, value=val))
     db.session.commit()
 
     flash("Child sample created.", "ok")
@@ -1129,7 +1184,8 @@ def split_sample(sample_id):
 @app.route("/sample/<int:sample_id>")
 def view_sample(sample_id):
     sample = Sample.query.get_or_404(sample_id)
-    exp_choices = Experiment.query.filter_by(project_id=sample.project_id).order_by(Experiment.created_at.desc()).all()
+    exp_choices = Experiment.query.filter_by(
+        project_id=sample.project_id).order_by(Experiment.created_at.desc()).all()
 
     # lineage & tree (if you already added them) ...
     lineage = get_sample_lineage(sample)
@@ -1143,7 +1199,8 @@ def view_sample(sample_id):
     for a in attrs:
         v = val_by_attr.get(a.id)
         value = v.value if v else ""
-        placeholder = (v.is_placeholder if v else True) if value == "PLEASE UPDATE" or (not v) else bool(v.is_placeholder)
+        placeholder = (v.is_placeholder if v else True) if value == "PLEASE UPDATE" or (
+            not v) else bool(v.is_placeholder)
         if (not v) or placeholder:
             needs_update += 1
         attr_defs.append({
@@ -1162,10 +1219,11 @@ def view_sample(sample_id):
         sample=sample,
         exp_choices=exp_choices,
         lineage=lineage,
-        family_tree = serialize_sample_tree(get_sample_root(sample), sample.id),
+        family_tree=serialize_sample_tree(get_sample_root(sample), sample.id),
         attr_defs=attr_defs,
         needs_update=needs_update,
     )
+
 
 @app.context_processor
 def inject_global_counts():
@@ -1192,7 +1250,8 @@ def link_experiment(sample_id):
         return redirect(url_for("view_sample", sample_id=sample.id))
 
     # Link selected + its ancestors (helper prevents duplicates)
-    link_sample_to_experiment_with_lineage(sample, selected, role="other", notes=notes)
+    link_sample_to_experiment_with_lineage(
+        sample, selected, role="other", notes=notes)
     flash("Experiment linked (including lineage).", "ok")
     return redirect(url_for("view_sample", sample_id=sample.id))
 
@@ -1221,6 +1280,7 @@ def link_existing_parent(experiment_id):
     db.session.commit()
     flash("Parent linked.", "ok")
     return redirect(url_for("view_experiment", experiment_id=current.id))
+
 
 @app.post("/experiment/<int:experiment_id>/link/child")
 def link_existing_child(experiment_id):
@@ -1256,6 +1316,7 @@ def unlink_experiment(link_id):
     db.session.commit()
     flash("Link removed.", "ok")
     return redirect(url_for("view_sample", sample_id=sid))
+
 
 @app.post("/experiment/<int:experiment_id>/unlink/parent")
 def unlink_parent_experiment(experiment_id):
@@ -1305,6 +1366,7 @@ def create_parent_experiment(experiment_id):
     db.session.commit()
     flash("Parent experiment created and linked.", "ok")
     return redirect(url_for("view_experiment", experiment_id=current.id))
+
 
 @app.post("/experiment/<int:experiment_id>/create/child")
 def create_child_experiment(experiment_id):
@@ -1370,6 +1432,7 @@ def download_sample_doc(doc_id):
         download_name=d.filename,
     )
 
+
 @app.route("/sample/<int:sample_id>/edit", methods=["POST"])
 def edit_sample(sample_id):
     sample = Sample.query.get_or_404(sample_id)
@@ -1401,7 +1464,8 @@ def edit_sample(sample_id):
                 is_placeholder=False
             ))
     if missing_required:
-        flash("Missing required attributes: " + ", ".join(missing_required), "error")
+        flash("Missing required attributes: " +
+              ", ".join(missing_required), "error")
         return redirect(url_for("view_sample", sample_id=sample.id))
 
     db.session.commit()
@@ -1412,7 +1476,6 @@ def edit_sample(sample_id):
 # --- Bootstrap DB on first run ---
 
 
-
 with app.app_context():
     db.create_all()
 
@@ -1420,7 +1483,8 @@ with app.app_context():
 
     def add_column_if_missing(table: str, column: str, ddl: str):
         with db.engine.begin() as conn:
-            cols = [row[1] for row in conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()]
+            cols = [row[1] for row in conn.exec_driver_sql(
+                f"PRAGMA table_info({table})").fetchall()]
             if column in cols:
                 return
             try:
@@ -1447,11 +1511,11 @@ with app.app_context():
 
     # Attributes / values
     add_column_if_missing("project_sample_attribute", "unit", "unit TEXT")
-    add_column_if_missing("sample_attribute_value",   "is_placeholder", "is_placeholder BOOLEAN")
-    add_column_if_missing("sample_attribute_value",   "updated_at",     "updated_at DATETIME")
+    add_column_if_missing("sample_attribute_value",
+                          "is_placeholder", "is_placeholder BOOLEAN")
+    add_column_if_missing("sample_attribute_value",
+                          "updated_at",     "updated_at DATETIME")
 
-
-    
 
 if __name__ == "__main__":
     app.run(debug=True)
