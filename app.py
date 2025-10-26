@@ -751,8 +751,7 @@ def add_sample_attribute(project_id):
             created += 1
     db.session.commit()
 
-    flash(f"Sample attribute added. {
-          created} sample(s) marked as needing update.", "ok")
+    flash(f"Sample attribute added. {created} sample(s) marked as needing update.", "ok")
     return redirect(url_for("view_project", project_id=p.id))
 
 
