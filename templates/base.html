@@ -40,37 +40,12 @@
         <li class="nav-item dropdown">
           <a class="nav-link dropdown-toggle" href="#" id="rootMenu" role="button" data-bs-toggle="dropdown" aria-expanded="false">Menu</a>
           <ul class="dropdown-menu" aria-labelledby="rootMenu">
-            <li><a class="dropdown-item" href="{{ url_for('index') }}">Projects</a></li>
             <li><a class="dropdown-item" href="{{ url_for('all_projects') }}">All Projects</a></li>
             <li><a class="dropdown-item" href="{{ url_for('list_equipment') }}">Equipment</a></li>
             <li><a class="dropdown-item" href="{{ url_for('list_stock_materials') }}">Stock Inventory</a></li>
           </ul>
         </li>
 
-        <li class="nav-item">
-          <a class="nav-link{% if request.endpoint == 'index' %} active{% endif %}" href="{{ url_for('index') }}">
-            Projects
-            {% if global_counts is defined and global_counts.projects is defined %}
-              <span class="badge text-bg-secondary ms-1 badge-pill">{{ global_counts.projects }}</span>
-            {% endif %}
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link{% if request.endpoint in ['list_samples','view_sample'] %} active{% endif %}" href="{{ url_for('list_samples') }}">
-            Samples
-            {% if global_counts is defined and global_counts.samples is defined %}
-              <span class="badge text-bg-secondary ms-1 badge-pill">{{ global_counts.samples }}</span>
-            {% endif %}
-          </a>
-        </li>
-        <li class="nav-item">
-          <span class="nav-link disabled">
-            Experiments
-            {% if global_counts is defined and global_counts.experiments is defined %}
-              <span class="badge text-bg-secondary ms-1 badge-pill">{{ global_counts.experiments }}</span>
-            {% endif %}
-          </span>
-        </li>
       </ul>
 
       <!-- Right: Search, New, Theme -->
