@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h2 class="mb-0">Equipment</h2>
+    <div class="text-muted small">All instruments and devices</div>
+  </div>
+  <div>
+    <a class="btn btn-sm btn-primary" href="#">Add Equipment</a>
+  </div>
+</div>
+
+<div class="row g-3">
+  {% for e in equipment %}
+    <div class="col-md-6">
+      <div class="card card-body mb-2">
+        <div class="d-flex justify-content-between align-items-start">
+          <div>
+            <h5 class="mb-1">{{ e.name }}</h5>
+            <div class="small text-muted">{{ e.model or '' }} · {{ e.serial_number or '' }}</div>
+          </div>
+          <div class="text-end small text-muted">Created {{ e.created_at.strftime('%Y-%m-%d') }}</div>
+        </div>
+        <div class="mt-2">{{ e.location or '' }} {% if e.project %} · Project: <a href="{{ url_for('view_project', project_id=e.project.id) }}">{{ e.project.title }}</a>{% endif %}</div>
+      </div>
+    </div>
+  {% else %}
+    <div class="col-12"><p class="text-muted">No equipment yet.</p></div>
+  {% endfor %}
+</div>
+
+{% endblock %}

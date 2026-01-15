@@ -110,12 +110,35 @@
             </select>
           </div>
           <div class="col-md-12">
+            <label class="form-label">Sample Class (optional)</label>
+            <div class="input-group">
+              <select class="form-select" id="sample-class-select" name="sample_class_id">
+                <option value="">(none)</option>
+              </select>
+              <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#sampleClassModal">New Class</button>
+            </div>
+          </div>
+          <div class="col-md-12">
+            <label class="form-label">Stock Material (lab inventory)</label>
+            <select class="form-select" id="stock-material-select" name="stock_material_id">
+              <option value="">(none)</option>
+            </select>
+            <div class="form-text">Select a lab stock material for this sample. For child samples this is inherited from the root and cannot be changed.</div>
+          </div>
+          <div class="col-md-12">
             <label class="form-label">Sample Name</label>
             <input class="form-control" name="name" required placeholder="e.g., SS316H Heat A">
           </div>
         </div>
 
         <!-- Dynamic project-defined attributes -->
+        <!-- Dynamic sample-class attributes -->
+        <div class="mt-3" id="sc-attrs" style="display:none;">
+          <h6 class="mb-2">Sample Class Attributes</h6>
+          <div id="sc-attrs-fields"></div>
+          <div class="form-text">These fields come from the selected Sample Class (lab-level).</div>
+        </div>
+
         <div class="mt-3" id="dyn-attrs" style="display:none;">
           <h6 class="mb-2">Project-required Attributes</h6>
           <div id="dyn-attrs-fields"></div>
@@ -145,8 +168,48 @@
 </div>
 
 <!-- Data blocks -->
+<!-- Sample Class creation modal -->
+<div class="modal fade" id="sampleClassModal" tabindex="-1" aria-labelledby="sampleClassModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('create_sample_class') }}">
+        <div class="modal-header">
+          <h5 class="modal-title" id="sampleClassModalLabel">Create Sample Class</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input class="form-control" name="name" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Slug (optional)</label>
+            <input class="form-control" name="slug" placeholder="leave blank to auto-generate">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Description (optional)</label>
+            <textarea class="form-control" name="description" rows="2"></textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Attributes</label>
+            <div id="sc-attrs-builder" class="mb-2"></div>
+            <button type="button" id="add-sc-attr" class="btn btn-sm btn-outline-primary mb-2">+ Add attribute</button>
+            <input type="hidden" name="attributes" id="sc-attributes-input">
+            <div class="form-text">Add attributes with name, type, required flag and optional choices for select fields. The form will serialize them automatically.</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-primary">Create Class</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 <script id="sample-data" type="application/json">{{ sample_opts | tojson }}</script>
 <script id="exp-data" type="application/json">{{ experiment_opts | tojson }}</script>
+<script id="sample-class-data" type="application/json">{{ sample_class_opts | tojson }}</script>
+<script id="stock-material-data" type="application/json">{{ stock_material_opts | tojson }}</script>
 
 <script>
 (function(){
@@ -159,8 +222,10 @@
 
   let sampleData = [];
   let expData = [];
+  let scData = [];
   try { sampleData = JSON.parse(document.getElementById('sample-data').textContent || '[]'); } catch(_) {}
   try { expData    = JSON.parse(document.getElementById('exp-data').textContent || '[]'); } catch(_) {}
+  try { scData     = JSON.parse(document.getElementById('sample-class-data').textContent || '[]'); } catch(_) {}
 
   function resetSel(sel, placeholder){
     sel.innerHTML = '';
@@ -207,6 +272,60 @@
   function clearDyn(){ fieldsBox.innerHTML = ''; }
   function toggleCreate(ok){ createBtn.disabled = !ok; }
 
+  // sample-class helpers
+  const scSel = document.getElementById('sample-class-select');
+  const scWrap = document.getElementById('sc-attrs');
+  const scFields = document.getElementById('sc-attrs-fields');
+
+  function slugify(name){ return (name||'').toString().toLowerCase().replace(/[^0-9a-z]+/g,'_'); }
+
+  function populateSampleClasses(){
+    scSel.innerHTML = '';
+    const ph = document.createElement('option'); ph.value=''; ph.textContent='(none)'; scSel.appendChild(ph);
+    scData.forEach(sc => {
+      const opt = document.createElement('option'); opt.value = sc.id; opt.textContent = sc.name; scSel.appendChild(opt);
+    });
+  }
+
+  // Stock material populate
+  const stockSel = document.getElementById('stock-material-select');
+  const stockDataEl = document.getElementById('stock-material-data');
+  let stockData = [];
+  try { stockData = JSON.parse(stockDataEl.textContent || '[]'); } catch(_) {}
+  function populateStockMaterials(){
+    stockSel.innerHTML = '';
+    const ph = document.createElement('option'); ph.value=''; ph.textContent='(none)'; stockSel.appendChild(ph);
+    stockData.forEach(sm => {
+      const opt = document.createElement('option'); opt.value = sm.id; opt.textContent = sm.name + (sm.lot_number?(' — ' + sm.lot_number):''); stockSel.appendChild(opt);
+    });
+  }
+
+  function renderScAttrs(sc){
+    scFields.innerHTML = '';
+    if (!sc || !sc.attributes || !sc.attributes.length){ scWrap.style.display = 'none'; return; }
+    scWrap.style.display = '';
+    sc.attributes.forEach(a => {
+      const slug = slugify(a.name);
+      const id = `sc_${slug}`;
+      const group = document.createElement('div'); group.className='mb-2';
+      const label = document.createElement('label'); label.className='form-label'; label.setAttribute('for', id);
+      label.textContent = a.name + (a.required ? ' *' : '');
+      let input;
+      if (a.field_type === 'select'){
+        input = document.createElement('select'); input.className='form-select'; input.name = id; input.id = id;
+        if (!a.required){ const opt=document.createElement('option'); opt.value=''; opt.textContent='(optional)'; input.appendChild(opt); }
+        (a.choices||[]).forEach(v=>{ const opt=document.createElement('option'); opt.value=v; opt.textContent=v; input.appendChild(opt); });
+      } else {
+        input = document.createElement('input'); input.className='form-control'; input.name=id; input.id=id;
+        input.type = (a.field_type==='number'?'number': (a.field_type==='date'?'date':'text'));
+        if (!a.required) input.placeholder='(optional)';
+      }
+      if (a.required) input.required = true;
+      group.appendChild(label); group.appendChild(input); scFields.appendChild(group);
+    });
+  }
+
+
   async function loadAttrs(pid){
     clearDyn();
     if (!pid) { wrap.style.display = 'none'; toggleCreate(false); return; }
@@ -223,8 +342,9 @@
       wrap.style.display = '';
       attrs.forEach(a => {
         const id = `attr_${a.id}`;
-        const group = document.createElement('div');
+  const group = document.createElement('div');
         group.className = 'mb-2';
+  group.setAttribute('data-inherited', a.inherited ? 'true' : 'false');
 
         const label = document.createElement('label');
         label.className = 'form-label';
@@ -253,6 +373,11 @@
           if (!a.required) input.placeholder = '(optional)';
         }
         if (a.required) input.required = true;
+        if (a.inherited) {
+          // inherited fields are locked by default until a parent is chosen
+          input.disabled = true;
+          input.placeholder = '(inherited from parent)';
+        }
 
         group.appendChild(label);
         group.appendChild(input);
@@ -272,13 +397,194 @@
     populateParents(pid);
     populateExperiments(pid);
     loadAttrs(pid);
+    // when project changes, reset stock selection
+    populateStockMaterials();
   });
+
+  parentSel.addEventListener('change', function(){
+    const pid = projSel.value ? Number(projSel.value) : null;
+    const parentId = this.value ? Number(this.value) : null;
+    // if parent selected, fetch its root attribute values and apply to inherited fields
+    if (parentId && pid) {
+      // find parent in sampleData to read its stock_material_id
+      const pObj = sampleData.find(s => s.id === Number(parentId));
+      if (pObj && pObj.stock_material_id) {
+        try { stockSel.value = pObj.stock_material_id; } catch(e) {}
+      } else {
+        stockSel.value = '';
+      }
+      // disable stock selection for child samples
+      stockSel.disabled = true;
+      fetch(`/api/sample/${parentId}/attr-values`).then(r=>r.json()).then(map=>{
+        // for each dynamic project attr input, if attribute marked inherited, set and disable
+        const groups = document.querySelectorAll('#dyn-attrs-fields .mb-2');
+        groups.forEach(g=>{
+          const input = g.querySelector('input, select');
+          if(!input) return;
+          const id = input.id || input.name || '';
+          const m = id.match(/^attr_(\d+)$/);
+          if (!m) return;
+          const aid = m[1];
+          // find attribute metadata by asking server repr via existing element dataset? we rely on API-marked 'inherited' flag when rendering
+          // The server attaches the 'inherited' flag to the attr data when created; we encoded it in the element via data-inherited
+          const isInherited = g.getAttribute('data-inherited') === 'true';
+          if (isInherited) {
+            input.value = map[aid] || '';
+            input.disabled = true;
+          } else {
+            input.disabled = false;
+          }
+        });
+      }).catch(()=>{});
+    } else {
+      // no parent selected — ensure inherited fields are enabled/cleared
+      const groups = document.querySelectorAll('#dyn-attrs-fields .mb-2');
+      groups.forEach(g=>{
+        const input = g.querySelector('input, select'); if(!input) return;
+        const isInherited = g.getAttribute('data-inherited') === 'true';
+        if (isInherited) { input.value=''; input.disabled = true; }
+      });
+      // re-enable stock selection for root sample creation
+      stockSel.disabled = false;
+    }
+  });
+
+  // sample-class select handling
+  populateSampleClasses();
+  scSel.addEventListener('change', function(){
+    const id = Number(this.value);
+    const sc = scData.find(x=>x.id===id);
+    const pid = projSel.value ? Number(projSel.value) : null;
+    if (pid && id) {
+      fetch(`/api/project/${pid}/sample-class/${id}/attrs`).then(r=>r.json()).then(attrs=>{
+        // convert to same shape as sc.attributes
+        const fake = { attributes: attrs };
+        renderScAttrs(fake);
+      }).catch(()=>{
+        renderScAttrs(sc);
+      });
+    } else {
+      renderScAttrs(sc);
+    }
+  });
+
+  // Attribute builder for Sample Class modal
+  const builder = document.getElementById('sc-attrs-builder');
+  const addBtn = document.getElementById('add-sc-attr');
+  const hiddenInput = document.getElementById('sc-attributes-input');
+
+  function makeAttrRow(attr){
+    const id = 'a_' + Math.random().toString(36).slice(2,8);
+    const div = document.createElement('div'); div.className='row g-2 align-items-end mb-2 sc-attr-row';
+    div.innerHTML = `
+      <div class="col-md-4">
+        <label class="form-label visually-hidden">Name</label>
+        <input class="form-control sc-attr-name" placeholder="Attribute name" value="${attr && attr.name?attr.name:''}" required>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label visually-hidden">Type</label>
+        <select class="form-select sc-attr-type">
+          <option value="text">Text</option>
+          <option value="number">Number</option>
+          <option value="select">Select</option>
+          <option value="date">Date</option>
+        </select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label visually-hidden">Unit</label>
+        <input class="form-control sc-attr-unit" placeholder="Unit (opt)" list="unit-list" value="${attr && attr.unit?attr.unit:''}">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label visually-hidden">Choices</label>
+        <input class="form-control sc-attr-choices" placeholder="comma,separated (for select)" value="${attr && attr.choices? (Array.isArray(attr.choices)?attr.choices.join(','):attr.choices):''}" ${attr && attr.field_type !== 'select'? 'disabled':''}>
+      </div>
+      <div class="col-md-1 d-flex align-items-center">
+        <div class="form-check">
+          <input id="${id}-req" class="form-check-input sc-attr-required" type="checkbox" ${attr && attr.required? 'checked':''}>
+          <label class="form-check-label" for="${id}-req">Req</label>
+        </div>
+      </div>
+      <div class="col-md-1 d-flex align-items-center">
+        <div class="form-check">
+          <input id="${id}-inh" class="form-check-input sc-attr-inherit" type="checkbox" ${attr && attr.inherited? 'checked':''}>
+          <label class="form-check-label" for="${id}-inh">Inh</label>
+        </div>
+      </div>
+      <div class="col-md-1">
+        <button type="button" class="btn btn-sm btn-outline-danger sc-attr-remove">Remove</button>
+      </div>
+    `;
+
+    // set type if provided
+    if (attr && attr.field_type) {
+      const sel = div.querySelector('.sc-attr-type'); sel.value = attr.field_type;
+    }
+
+    // wire choices enable/disable
+    const typeSel = div.querySelector('.sc-attr-type');
+    const choicesInput = div.querySelector('.sc-attr-choices');
+    typeSel.addEventListener('change', function(){
+      const isSelect = this.value === 'select';
+      choicesInput.disabled = !isSelect;
+      if (!isSelect) choicesInput.value = '';
+    });
+
+    // remove
+    div.querySelector('.sc-attr-remove').addEventListener('click', function(){ div.remove(); serializeAttrs(); });
+
+    return div;
+  }
+
+  function serializeAttrs(){
+    const rows = builder.querySelectorAll('.sc-attr-row');
+    const out = [];
+    rows.forEach(r => {
+      const name = (r.querySelector('.sc-attr-name').value || '').trim();
+      if (!name) return;
+      const field_type = r.querySelector('.sc-attr-type').value;
+      const unit = (r.querySelector('.sc-attr-unit').value || '').trim() || null;
+      const rawChoices = (r.querySelector('.sc-attr-choices').value || '').trim();
+      const choices = rawChoices ? rawChoices.split(',').map(s=>s.trim()).filter(Boolean) : null;
+  const required = r.querySelector('.sc-attr-required').checked;
+  const inherited = !!r.querySelector('.sc-attr-inherit') && r.querySelector('.sc-attr-inherit').checked;
+  const obj = { name, field_type, required, inherited };
+      if (unit) obj.unit = unit;
+      if (choices) obj.choices = choices;
+      out.push(obj);
+    });
+    hiddenInput.value = JSON.stringify(out);
+    return out;
+  }
+
+  addBtn.addEventListener('click', function(){ builder.appendChild(makeAttrRow()); });
+
+  // initialize with existing scData when editing
+  (function initBuilder(){
+    // if sample class modal is opened with a selected class, prefill builder
+    // when modal shown, populate rows from selected sample class attributes
+    const modal = document.getElementById('sampleClassModal');
+    modal.addEventListener('show.bs.modal', function(e){
+      // clear builder
+      builder.innerHTML = '';
+      const scsel = document.getElementById('sample-class-select');
+      const id = Number(scsel.value);
+      const sc = scData.find(x=>x.id===id);
+      if (sc && sc.attributes && sc.attributes.length){
+        sc.attributes.forEach(a => builder.appendChild(makeAttrRow(a)));
+      }
+    });
+  })();
+
+  // serialize before submit
+  const scForm = document.querySelector('#sampleClassModal form');
+  if (scForm){ scForm.addEventListener('submit', function(){ serializeAttrs(); }); }
 
   // Prefill if project already selected (rare on reload)
   if (projSel.value) {
     populateParents(projSel.value);
     populateExperiments(projSel.value);
     loadAttrs(projSel.value);
+    populateStockMaterials();
   } else {
     toggleCreate(false);
   }

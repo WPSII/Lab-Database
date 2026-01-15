@@ -44,6 +44,31 @@
 </div>
 {% endif %}
 
+{% if can_manage %}
+<div class="card card-body mb-3">
+  <h5 class="mb-2">Project Start / End Dates</h5>
+  <form method="post" action="{{ url_for('edit_project_dates', project_id=project.id) }}">
+    <div class="row g-2 align-items-end">
+      <div class="col-md-3">
+        <label class="form-label">Start date</label>
+        <input type="date" class="form-control" name="start_date" value="{{ project.start_date.strftime('%Y-%m-%d') if project.start_date else '' }}">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">End date</label>
+        <input type="date" class="form-control" name="end_date" value="{{ project.end_date.strftime('%Y-%m-%d') if project.end_date else '' }}">
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-primary">Save dates</button>
+      </div>
+    </div>
+  </form>
+</div>
+{% else %}
+<div class="mb-3">
+  <small class="text-muted">Start: {{ project.start_date.strftime('%Y-%m-%d') if project.start_date else '—' }} · End: {{ project.end_date.strftime('%Y-%m-%d') if project.end_date else '—' }}</small>
+</div>
+{% endif %}
+
 <div class="card card-body mb-3">
   <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
     <div>
@@ -118,88 +143,37 @@
   <!-- Right: Attributes + Experiments -->
   <div class="col-lg-6">
 
-    <!-- Sample Attributes -->
+    <!-- Sample Classes (project-level selection & customization) -->
     <div class="card card-body mb-3">
-      <h5 class="mb-2">Sample Attributes</h5>
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Sample Classes</h5>
+        {% if can_manage %}
+          <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#projectSampleClassModal">Add Sample Class</button>
+        {% endif %}
+      </div>
+
+      <div class="mb-3">
+        <p class="small text-muted">Select lab-level Sample Classes relevant to this project and optionally customize attributes for this project only.</p>
+      </div>
 
       <ul class="list-group mb-3">
-        {% for a in project.sample_attributes|sort(attribute='sort_order') %}
+        {% for psc in project_sample_classes %}
           <li class="list-group-item d-flex justify-content-between align-items-start">
             <div>
-              <div class="fw-semibold">
-                {{ a.name }}
-                {% if a.unit %}
-                  <span class="badge bg-light text-muted ms-1">{{ a.unit }}</span>
-                {% endif %}
-              </div>
-              <div class="small text-muted">
-                type: {{ a.field_type }}{% if a.required %} · required{% endif %}
-                {% if a.field_type == 'select' and a.choices_json %}
-                  · choices: {{ a.choices_json }}
-                {% endif %}
-                {% if a.sort_order %} · order: {{ a.sort_order }}{% endif %}
-              </div>
+              <div class="fw-semibold">{{ psc.name_override or psc.sample_class.name }}</div>
+              <div class="small text-muted">Lab class: {{ psc.sample_class.name }}{% if psc.sample_class.description %} · {{ psc.sample_class.description }}{% endif %}</div>
             </div>
-            <form method="post"
-                  action="{{ url_for('delete_sample_attribute', attr_id=a.id) }}"
-                  onsubmit="return confirm('Remove attribute? This will delete values from all samples in this project.');">
-              <button class="btn btn-sm btn-outline-danger">Remove</button>
-            </form>
+            <div class="btn-group">
+              <button class="btn btn-sm btn-outline-secondary" data-psc='{{ {"id": psc.id, "sample_class_id": psc.sample_class_id, "name_override": psc.name_override, "attributes_override_json": psc.attributes_override_json}|tojson }}' data-bs-toggle="modal" data-bs-target="#projectSampleClassModal">Customize</button>
+              <form method="post" action="{{ url_for('delete_project_sample_class', project_id=project.id, psc_id=psc.id) }}" onsubmit="return confirm('Remove this project sample class?');">
+                <button class="btn btn-sm btn-outline-danger">Remove</button>
+              </form>
+            </div>
           </li>
         {% else %}
-          <li class="list-group-item">No attributes defined yet.</li>
+          <li class="list-group-item">No sample classes added to this project yet.</li>
         {% endfor %}
       </ul>
-
-      <!-- Add attribute -->
-      <form method="post" action="{{ url_for('add_sample_attribute', project_id=project.id) }}">
-        <div class="row g-2">
-          <div class="col-md-3">
-            <label class="form-label">Name</label>
-            <input class="form-control" name="name" placeholder="e.g., Thickness" required>
-          </div>
-          <div class="col-md-2">
-            <label class="form-label">Field Type</label>
-            <select class="form-select" name="field_type" id="attr-field-type">
-              <option value="text">Text</option>
-              <option value="number">Number</option>
-              <option value="select">Select</option>
-              <option value="date">Date</option>
-            </select>
-          </div>
-          <div class="col-md-2">
-            <label class="form-label">Unit (optional)</label>
-            <input class="form-control" name="unit" list="unit-list" placeholder="e.g., mm">
-            <datalist id="unit-list">
-              <option>mm</option><option>µm</option><option>nm</option>
-              <option>°C</option><option>K</option>
-              <option>MPa</option><option>GPa</option>
-              <option>wt%</option><option>at%</option><option>mol%</option>
-              <option>hr</option><option>min</option><option>s</option>
-            </datalist>
-          </div>
-          <div class="col-md-3">
-            <label class="form-label">Choices (for Select)</label>
-            <input class="form-control" name="choices" id="attr-choices" placeholder="comma,separated,values" disabled>
-          </div>
-          <div class="col-md-1">
-            <label class="form-label">Order</label>
-            <input class="form-control" name="sort_order" type="number" value="0">
-          </div>
-          <div class="col-md-1 d-flex align-items-end">
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" id="attrRequired" name="required">
-              <label class="form-check-label" for="attrRequired">Req</label>
-            </div>
-          </div>
-        </div>
-        <div class="mt-2 small text-muted">
-          Removing an attribute deletes its values from all samples in this project.
-        </div>
-        <div class="mt-3">
-          <button class="btn btn-primary">Add Attribute</button>
-        </div>
-      </form>
     </div>
 
     <!-- Experiments -->
@@ -277,6 +251,296 @@
       });
     });
   }
+})();
+</script>
+
+<!-- Project Sample Class modal + builder -->
+<div class="modal fade" id="projectSampleClassModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+  <form method="post" id="psc-form" action="{{ url_for('add_project_sample_class', project_id=project.id) }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Add / Customize Sample Class</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="psc_id" id="psc-id-input">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label">Lab Sample Class</label>
+              <select class="form-select" name="sample_class_id" id="psc-class-select" required>
+                <option value="">Select a sample class…</option>
+                {% for sc in sample_classes %}
+                  <option value="{{ sc.id }}">{{ sc.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Name Override (optional)</label>
+              <input class="form-control" name="name_override" id="psc-name-override">
+            </div>
+          </div>
+
+          <hr>
+          <h6>Attribute Overrides / Additions</h6>
+          <div id="psc-attrs-builder" class="mb-2"></div>
+          <button type="button" id="psc-add-attr" class="btn btn-sm btn-outline-primary mb-2">+ Add attribute</button>
+          <input type="hidden" name="attributes" id="psc-attributes-input">
+          <div class="form-text">Customize attributes for this project only. These will be merged with the lab-level class attributes.</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Project Timeline -->
+<div class="card card-body mt-3">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h5 class="mb-0">Project Timeline</h5>
+    <div>
+      <button id="timelineFilterToggle" class="btn btn-sm btn-outline-secondary">Filters</button>
+    </div>
+  </div>
+
+  <div id="timelineFilters" class="mb-3" style="display:none">
+    <div class="form-check form-check-inline">
+      <!-- single checkbox toggles both start and end event types -->
+      <input class="form-check-input tl-filter" type="checkbox" id="tf-experiments" value="experiment_start,experiment_end" checked>
+      <label class="form-check-label" for="tf-experiments">Experiment start/end</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input tl-filter" type="checkbox" id="tf-samples" value="sample_created" checked>
+      <label class="form-check-label" for="tf-samples">Samples</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input tl-filter" type="checkbox" id="tf-maint" value="maintenance" checked>
+      <label class="form-check-label" for="tf-maint">Maintenance</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input tl-filter" type="checkbox" id="tf-cal" value="calibration" checked>
+      <label class="form-check-label" for="tf-cal">Calibration</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input tl-filter" type="checkbox" id="tf-meas" value="measurement" checked>
+      <label class="form-check-label" for="tf-meas">Measurements</label>
+    </div>
+  </div>
+
+  <div id="timelineContainer">
+    <p class="text-muted">Loading timeline…</p>
+  </div>
+</div>
+
+<script>
+(function(){
+  const toggle = document.getElementById('timelineFilterToggle');
+  const filters = document.getElementById('timelineFilters');
+  const projectId = {{ project.id|tojson }};
+  toggle && toggle.addEventListener('click', () => {
+    if (!filters) return;
+    filters.style.display = filters.style.display === 'none' ? '' : 'none';
+  });
+
+  function getActiveTypes() {
+    const els = document.querySelectorAll('.tl-filter');
+    const out = new Set();
+    els.forEach(el => {
+      if (el.checked) out.add(el.value);
+    });
+    return out;
+  }
+
+  function renderTimeline(data) {
+    const container = document.getElementById('timelineContainer');
+    container.innerHTML = '';
+    const months = Object.keys(data).sort().reverse();
+    if (!months.length) {
+      container.innerHTML = '<p class="text-muted">No timeline events yet.</p>';
+      return;
+    }
+    // store loaded timeline data globally so navigation can inspect months
+    window._tl_data = data;
+    const active = getActiveTypes();
+    months.forEach(m => {
+      const box = document.createElement('div');
+      box.className = 'mb-3 border rounded p-2';
+      box.id = `month-${m}`;
+      const h = document.createElement('h6');
+      h.textContent = m;
+      box.appendChild(h);
+      const list = document.createElement('ul');
+      list.className = 'mb-0';
+      data[m].forEach(ev => {
+        if (!active.has(ev.type)) return;
+        const li = document.createElement('li');
+        const time = (ev.timestamp || '').slice(0,16).replace('T',' ');
+        const anchor = document.createElement('a');
+        anchor.textContent = `${time} · ${ev.title} (${ev.type.replace('_',' ')})`;
+        if (ev.url) anchor.href = ev.url;
+        li.appendChild(anchor);
+        list.appendChild(li);
+      });
+      box.appendChild(list);
+      container.appendChild(box);
+    });
+    // reset month index and scroll to newest month
+    monthIndex = 0;
+    scrollToMonth(monthIndex);
+  }
+
+  async function loadTimeline(){
+    const types = Array.from(getActiveTypes()).join(',');
+    const url = `/project/${projectId}/timeline` + (types ? `?types=${encodeURIComponent(types)}` : '');
+    const res = await fetch(url);
+    if (res.ok){
+      const data = await res.json();
+      renderTimeline(data);
+    } else {
+      document.getElementById('timelineContainer').innerHTML = '<p class="text-danger">Failed to load timeline.</p>';
+    }
+  }
+
+  // month navigation controls
+  const navBar = document.createElement('div');
+  navBar.className = 'mb-2 d-flex gap-2';
+  const btnPrev = document.createElement('button'); btnPrev.className='btn btn-sm btn-outline-secondary'; btnPrev.textContent='Prev Month';
+  const btnNext = document.createElement('button'); btnNext.className='btn btn-sm btn-outline-secondary'; btnNext.textContent='Next Month';
+  const btnJump = document.createElement('button'); btnJump.className='btn btn-sm btn-outline-primary'; btnJump.textContent='Jump to Project Start';
+  navBar.appendChild(btnPrev); navBar.appendChild(btnNext); navBar.appendChild(btnJump);
+  const containerWrap = document.getElementById('timelineContainer');
+  containerWrap.parentNode.insertBefore(navBar, containerWrap);
+
+  let monthIndex = 0;
+  function visibleMonths(){ return Array.from(Object.keys(window._tl_data || {}).sort().reverse()); }
+  function scrollToMonth(idx){
+    const months = visibleMonths();
+    if (months.length === 0) return;
+    monthIndex = Math.max(0, Math.min(idx, months.length-1));
+    const id = `month-${months[monthIndex]}`;
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
+  }
+  btnPrev.addEventListener('click', ()=> scrollToMonth(monthIndex+1));
+  btnNext.addEventListener('click', ()=> scrollToMonth(monthIndex-1));
+  btnJump.addEventListener('click', ()=> {
+    // jump to project creation month
+    const projMonth = '{{ project.created_at.strftime("%Y-%m") }}';
+    const months = visibleMonths();
+    const idx = months.indexOf(projMonth);
+    if (idx >= 0) scrollToMonth(idx);
+  });
+
+  document.querySelectorAll('.tl-filter').forEach(el => el.addEventListener('change', loadTimeline));
+  loadTimeline();
+})();
+</script>
+
+<script>
+(function(){
+  // Builder functions (similar to samples page)
+  const builder = document.getElementById('psc-attrs-builder');
+  const addBtn = document.getElementById('psc-add-attr');
+  const hiddenInput = document.getElementById('psc-attributes-input');
+  const classSel = document.getElementById('psc-class-select');
+  const pscForm = document.getElementById('psc-form');
+  const pscIdInput = document.getElementById('psc-id-input');
+
+  function makeAttrRow(attr){
+    const uid = 'a_' + Math.random().toString(36).slice(2,8);
+    const div = document.createElement('div'); div.className='row g-2 align-items-end mb-2 sc-attr-row';
+    div.innerHTML = `
+      <div class="col-md-4"><input class="form-control sc-attr-name" placeholder="Attribute name" value="${attr&&attr.name?attr.name:''}" required></div>
+      <div class="col-md-2"><select class="form-select sc-attr-type"><option value="text">Text</option><option value="number">Number</option><option value="select">Select</option><option value="date">Date</option></select></div>
+      <div class="col-md-2"><input class="form-control sc-attr-unit" placeholder="Unit (opt)" value="${attr && attr.unit?attr.unit:''}"></div>
+      <div class="col-md-2"><input class="form-control sc-attr-choices" placeholder="comma,separated (for select)" value="${attr && attr.choices? (Array.isArray(attr.choices)?attr.choices.join(','):attr.choices):''}" ${attr && attr.field_type !== 'select'? 'disabled':''}></div>
+      <div class="col-md-1 d-flex align-items-center">
+        <div class="form-check">
+          <input id="${uid}-req" class="form-check-input sc-attr-required" type="checkbox" ${attr&&attr.required?'checked':''}>
+          <label class="form-check-label" for="${uid}-req">Req</label>
+        </div>
+      </div>
+      <div class="col-md-1 d-flex align-items-center">
+        <div class="form-check">
+          <input id="${uid}-inh" class="form-check-input sc-attr-inherit" type="checkbox" ${attr&&attr.inherited?'checked':''}>
+          <label class="form-check-label" for="${uid}-inh">Inh</label>
+        </div>
+      </div>
+      <div class="col-md-1"><button type="button" class="btn btn-sm btn-outline-danger sc-attr-remove">Remove</button></div>
+    `;
+    if (attr && attr.field_type) div.querySelector('.sc-attr-type').value = attr.field_type;
+    const typeSel = div.querySelector('.sc-attr-type'); const choicesInput = div.querySelector('.sc-attr-choices');
+    typeSel.addEventListener('change', function(){ const isSelect = this.value==='select'; choicesInput.disabled = !isSelect; if(!isSelect) choicesInput.value='';});
+    div.querySelector('.sc-attr-remove').addEventListener('click', function(){ div.remove(); serializeAttrs(); });
+    return div;
+  }
+
+  function serializeAttrs(){
+    const rows = builder.querySelectorAll('.sc-attr-row');
+    const out = [];
+    rows.forEach(r=>{
+      const name = (r.querySelector('.sc-attr-name').value || '').trim();
+      if (!name) return;
+      const field_type = r.querySelector('.sc-attr-type').value;
+      const unit = (r.querySelector('.sc-attr-unit').value || '').trim() || null;
+      const rawChoices = (r.querySelector('.sc-attr-choices').value || '').trim();
+      const choices = rawChoices ? rawChoices.split(',').map(s=>s.trim()).filter(Boolean) : null;
+      const required = r.querySelector('.sc-attr-required').checked;
+      const inherited = !!r.querySelector('.sc-attr-inherit') && r.querySelector('.sc-attr-inherit').checked;
+      const obj = { name, field_type, required, inherited };
+      if (unit) obj.unit = unit;
+      if (choices) obj.choices = choices;
+      out.push(obj);
+    });
+    hiddenInput.value = JSON.stringify(out);
+    return out;
+  }
+
+  addBtn.addEventListener('click', ()=> builder.appendChild(makeAttrRow()));
+
+  // when modal opens for add or customize
+  const modalEl = document.getElementById('projectSampleClassModal');
+  modalEl.addEventListener('show.bs.modal', function(e){
+    const trigger = e.relatedTarget;
+    const pscData = trigger && trigger.getAttribute ? trigger.getAttribute('data-psc') : null;
+    builder.innerHTML = '';
+    pscIdInput.value = '';
+    document.getElementById('psc-name-override').value = '';
+    classSel.value = '';
+    if (pscData){
+      try{
+        const obj = JSON.parse(pscData);
+        pscIdInput.value = obj.id || '';
+        if (obj.sample_class_id) classSel.value = obj.sample_class_id;
+        if (obj.name_override) document.getElementById('psc-name-override').value = obj.name_override;
+        if (obj.attributes_override_json){
+          let attrs = [];
+          try{ attrs = JSON.parse(obj.attributes_override_json); }catch(e){}
+          if (attrs && attrs.length){ attrs.forEach(a=> builder.appendChild(makeAttrRow(a))); serializeAttrs(); }
+        } else {
+          // load merged attrs for the project/class to show defaults
+          const pid = {{ project.id|tojson }};
+          if (obj.sample_class_id){
+            fetch(`/api/project/${pid}/sample-class/${obj.sample_class_id}/attrs`).then(r=>r.json()).then(attrs=>{ if(attrs&&attrs.length) attrs.forEach(a=> builder.appendChild(makeAttrRow(a))); serializeAttrs(); }).catch(()=>{});
+          }
+        }
+      }catch(e){ console.error('psc parse', e); }
+    }
+  });
+
+  // when class select changes, load merged attrs from API
+  classSel.addEventListener('change', function(){
+    const classId = Number(this.value);
+    const pid = {{ project.id|tojson }};
+    builder.innerHTML = '';
+    if (!classId) return;
+    fetch(`/api/project/${pid}/sample-class/${classId}/attrs`).then(r=>r.json()).then(attrs=>{ if(!attrs||!attrs.length) return; attrs.forEach(a=> builder.appendChild(makeAttrRow(a))); serializeAttrs(); }).catch(()=>{});
+  });
+
+  if (pscForm) pscForm.addEventListener('submit', function(){ serializeAttrs(); });
 })();
 </script>
 

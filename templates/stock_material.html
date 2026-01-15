@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+
+<p class="mb-3"><a href="{{ url_for('index') }}">&larr; Back</a></p>
+
+<h2>{{ mat.name }}</h2>
+<div class="text-muted mb-3">Created {{ mat.created_at.strftime('%Y-%m-%d') }}</div>
+
+<div class="card card-body mb-3">
+  <dl class="row mb-0">
+    <dt class="col-3">Lot</dt><dd class="col-9">{{ mat.lot_number or '—' }}</dd>
+    <dt class="col-3">Quantity</dt><dd class="col-9">{{ mat.quantity or '—' }} {{ mat.unit or '' }}</dd>
+    <dt class="col-3">Location</dt><dd class="col-9">{{ mat.location or '—' }}</dd>
+    <dt class="col-3">Manufacturer</dt><dd class="col-9">{{ mat.manufacturer or '—' }}</dd>
+  </dl>
+</div>
+
+<div class="card card-body">
+  <h5 class="mb-2">Description</h5>
+  <div style="white-space:pre-wrap;">{{ mat.description or '—' }}</div>
+</div>
+
+{% endblock %}

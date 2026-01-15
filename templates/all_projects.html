@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h2>All Projects</h2>
+  <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">Back</a>
+</div>
+
+<div class="row">
+  <div class="col-md-6">
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Current Projects</h5>
+      {% if current and current|length %}
+        <ul class="list-group">
+          {% for p in current %}
+            <li class="list-group-item d-flex justify-content-between align-items-start">
+              <div>
+                <a href="{{ url_for('view_project', project_id=p.id) }}" class="fw-semibold">{{ p.title }}</a>
+                <div class="small text-muted">Start: {{ p.start_date.strftime('%Y-%m-%d') if p.start_date else '—' }}</div>
+              </div>
+              <span class="badge text-bg-info">PI: {{ p.pi.name if p.pi else 'Unassigned' }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-muted">No current projects.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="col-md-6">
+    <div class="card card-body mb-3">
+      <h5 class="mb-2">Project Archive</h5>
+      {% if archive and archive|length %}
+        <ul class="list-group">
+          {% for p in archive %}
+            <li class="list-group-item d-flex justify-content-between align-items-start">
+              <div>
+                <a href="{{ url_for('view_project', project_id=p.id) }}" class="fw-semibold">{{ p.title }}</a>
+                <div class="small text-muted">Ended: {{ p.end_date.strftime('%Y-%m-%d') if p.end_date else '—' }}</div>
+              </div>
+              <span class="badge text-bg-info">PI: {{ p.pi.name if p.pi else 'Unassigned' }}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="text-muted">No archived projects.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% endblock %}

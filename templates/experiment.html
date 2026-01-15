@@ -63,6 +63,16 @@
           <label class="form-label">Details</label>
           <textarea class="form-control" name="details" rows="5" placeholder="Describe goals, parameters, notes...">{{ experiment.description or '' }}</textarea>
         </div>
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label">Start</label>
+            <input type="datetime-local" class="form-control" name="start_at" value="{{ experiment.start_at.strftime('%Y-%m-%dT%H:%M') if experiment.start_at else '' }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">End</label>
+            <input type="datetime-local" class="form-control" name="end_at" value="{{ experiment.end_at.strftime('%Y-%m-%dT%H:%M') if experiment.end_at else '' }}">
+          </div>
+        </div>
         <button class="btn btn-primary mt-2">Save</button>
       </form>
     </div>
@@ -229,6 +239,68 @@
     </div>
 
   </div>
+  </div>
+
+  <!-- Equipment linking & create child sample -->
+  <div class="card card-body mb-3">
+    <h5 class="mb-2">Equipment & Child Samples</h5>
+
+    <div class="mb-3">
+      <h6 class="mb-1">Link Equipment to this Experiment</h6>
+      <form method="post" action="{{ url_for('add_experiment_equipment', experiment_id=experiment.id) }}">
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label">Equipment</label>
+            <select name="equipment_id" class="form-select" required>
+              <option value="">Select equipment…</option>
+              {% for e in equipment_choices %}
+                <option value="{{ e.id }}">{{ e.name }}{% if e.model %} · {{ e.model }}{% endif %}</option>
+              {% else %}
+                <option disabled>No equipment available</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Role / Notes</label>
+            <input name="role" class="form-control" placeholder="e.g., measurement instrument">
+          </div>
+        </div>
+        <div class="mt-2">
+          <input type="text" name="notes" class="form-control" placeholder="Optional notes">
+        </div>
+        <div class="mt-2">
+          <button class="btn btn-outline-primary">Link Equipment</button>
+        </div>
+      </form>
+    </div>
+
+    <hr>
+
+    <div>
+      <h6 class="mb-1">Create Child Sample from Project Sample</h6>
+      <form method="post" action="{{ url_for('experiment_create_child_sample', experiment_id=experiment.id) }}">
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label">Parent Sample</label>
+            <select name="parent_sample_id" class="form-select" required>
+              <option value="">Select sample…</option>
+              {% for s in experiment.project.samples %}
+                <option value="{{ s.id }}">{{ s.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Child Name</label>
+            <input name="name" class="form-control" placeholder="Child sample name" required>
+          </div>
+        </div>
+        <div class="mt-2">
+          <button class="btn btn-primary">Create Child Sample</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
 </div>
 
 {% endblock %}

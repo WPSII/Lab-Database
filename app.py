@@ -1,21 +1,33 @@
-from flask import abort
-from flask_login import current_user
-from flask import request, redirect, url_for
 import os
-from datetime import datetime
-from flask import Flask, request, redirect, url_for, render_template, send_from_directory, flash
-from flask_sqlalchemy import SQLAlchemy
-from werkzeug.utils import secure_filename
-from flask import jsonify
-import json
-import qrcode
 import io
-from flask import send_file, session
+import json
+import re
+from datetime import datetime, timedelta
+
+from flask import (
+    Flask, abort, request, redirect, url_for, render_template,
+    send_from_directory, send_file, flash, jsonify, session
+)
 from flask_login import (
     LoginManager, UserMixin, login_user, login_required,
     logout_user, current_user
 )
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
+import qrcode
+from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
+import sqlite3
+from helpers import (
+    safe_json_loads,
+    get_sample_lineage, get_sample_root,
+    get_full_experiment_chain, get_experiment_descendant_ids,
+    get_ancestors, get_descendants,
+    would_create_cycle_as_parent, would_create_cycle_as_child,
+    serialize_sample_tree, serialize_experiment_tree,
+    build_linked_sample_tree,
+)
 
 
 def _uid():
@@ -48,6 +60,109 @@ db = SQLAlchemy(app)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
+def add_column_if_missing(table: str, column: str, coltype: str):
+    """Idempotently add a column to an SQLite table if it doesn't exist.
+
+    Uses PRAGMA table_info(table) to detect existing columns. Safe to call
+    at app startup. Silent on failure but logs exceptions.
+    """
+    try:
+        # PRAGMA returns rows like (cid,name,type,notnull,dflt_value,pk)
+        res = db.session.execute(text(f"PRAGMA table_info({table})")).fetchall()
+        existing = [r[1] for r in res]
+        if column in existing:
+            return False
+        # ALTER TABLE ADD COLUMN is supported by SQLite for simple additions
+        db.session.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}"))
+        db.session.commit()
+        app.logger.info(f"Added column {column} to {table}")
+        return True
+    except Exception as e:
+        # don't break startup; log and continue
+        try:
+            app.logger.exception(f"Failed to ensure column {column} on {table}: {e}")
+        except Exception:
+            pass
+        db.session.rollback()
+        return False
+
+
+# Track whether we've attempted runtime migrations in this process
+RUNTIME_MIGRATED = False
+
+
+def ensure_runtime_columns_once():
+    """Attempt to add missing nullable columns once per process.
+
+    This is safe to call from a request context; it will no-op after the
+    first attempt.
+    """
+    global RUNTIME_MIGRATED
+    if RUNTIME_MIGRATED:
+        return
+    try:
+        if app.config.get('SQLALCHEMY_DATABASE_URI', '').startswith('sqlite:'):
+            # Prefer a direct sqlite3 connection to perform PRAGMA/ALTER
+            # — this avoids SQLAlchemy scoped-session issues in some runtimes.
+            uri = app.config.get('SQLALCHEMY_DATABASE_URI')
+            # expect form sqlite:///absolute/path
+            db_path = None
+            if uri.startswith('sqlite:///'):
+                db_path = uri.replace('sqlite:///', '')
+            elif uri.startswith('sqlite://'):
+                db_path = uri.replace('sqlite://', '')
+
+            def _add_if_missing_sqlite(path, table, column, coltype):
+                try:
+                    conn = sqlite3.connect(path)
+                    cur = conn.cursor()
+                    cur.execute(f"PRAGMA table_info({table})")
+                    cols = [r[1] for r in cur.fetchall()]
+                    if column in cols:
+                        conn.close()
+                        return False
+                    cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+                    conn.commit()
+                    conn.close()
+                    try:
+                        app.logger.info(f"Added column {column} to {table} via sqlite3")
+                    except Exception:
+                        pass
+                    return True
+                except Exception:
+                    try:
+                        app.logger.exception(f"Failed to add {column} to {table} via sqlite3")
+                    except Exception:
+                        pass
+                    try:
+                        conn and conn.close()
+                    except Exception:
+                        pass
+                    return False
+
+            if db_path:
+                _add_if_missing_sqlite(db_path, 'project', 'start_date', 'DATE')
+                _add_if_missing_sqlite(db_path, 'project', 'end_date', 'DATE')
+                _add_if_missing_sqlite(db_path, 'equipment', 'project_id', 'INTEGER')
+                _add_if_missing_sqlite(db_path, 'stock_material', 'sample_class_id', 'INTEGER')
+            else:
+                # fallback to SQLAlchemy helper
+                add_column_if_missing('project', 'start_date', 'DATE')
+                add_column_if_missing('project', 'end_date', 'DATE')
+                add_column_if_missing('equipment', 'project_id', 'INTEGER')
+                add_column_if_missing('stock_material', 'sample_class_id', 'INTEGER')
+    except Exception:
+        try:
+            app.logger.exception('Failed to ensure runtime columns')
+        except Exception:
+            pass
+    finally:
+        RUNTIME_MIGRATED = True
+
+# Note: we avoid using @app.before_first_request due to environment differences.
+# Instead, call ensure_runtime_columns_once() from request handlers (before_request)
+
+
 # Endpoints that should stay publicly accessible
 LOGIN_EXEMPT = {
     "auth_login",        # GET/POST login page
@@ -61,6 +176,11 @@ LOGIN_EXEMPT = {
 
 @app.before_request
 def require_login_for_all_pages():
+    # ensure DB schema additions are present (runs once)
+    try:
+        ensure_runtime_columns_once()
+    except Exception:
+        pass
     # When Flask can't resolve an endpoint (404), request.endpoint may be None
     ep = request.endpoint or ""
     if ep in LOGIN_EXEMPT:
@@ -72,7 +192,6 @@ def require_login_for_all_pages():
 
     # Otherwise, bounce to login with ?next=
     return redirect(url_for("auth_login", next=request.url))
-
 
 # --- Models ---
 # --- Visibility constants ---
@@ -132,6 +251,9 @@ class Project(db.Model):
     title = db.Column(db.String(160), nullable=False)
     description = db.Column(db.Text, default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # optional start/end dates for project lifecycle
+    start_date = db.Column(db.Date, nullable=True)
+    end_date = db.Column(db.Date, nullable=True)
 
     pi_user_id = db.Column(db.Integer, db.ForeignKey("user.id"))
     pi = db.relationship("User", foreign_keys=[pi_user_id])
@@ -163,6 +285,9 @@ class Experiment(db.Model):
         remote_side=[id],
         backref=db.backref("children", cascade="all, delete-orphan")
     )
+    # optional timeline fields
+    start_at = db.Column(db.DateTime, nullable=True)
+    end_at = db.Column(db.DateTime, nullable=True)
 
     documents = db.relationship(
         "Document", backref="experiment", cascade="all, delete-orphan")
@@ -223,11 +348,32 @@ def edit_experiment_details(experiment_id):
     exp = Experiment.query.get_or_404(experiment_id)
     title = (request.form.get("title") or "").strip()
     details = (request.form.get("details") or "").strip()
+    # optional start/end datetimes from the edit form
+    start_raw = (request.form.get("start_at") or "").strip()
+    end_raw = (request.form.get("end_at") or "").strip()
     if not title:
         flash("Title is required.", "error")
         return redirect(url_for("view_experiment", experiment_id=exp.id))
     exp.title = title
     exp.description = details
+    # Parse datetimes if provided (expecting HTML datetime-local format: YYYY-MM-DDTHH:MM)
+    try:
+        if start_raw:
+            exp.start_at = datetime.fromisoformat(start_raw)
+        else:
+            exp.start_at = None
+    except Exception:
+        flash("Invalid start datetime format.", "error")
+        return redirect(url_for("view_experiment", experiment_id=exp.id))
+
+    try:
+        if end_raw:
+            exp.end_at = datetime.fromisoformat(end_raw)
+        else:
+            exp.end_at = None
+    except Exception:
+        flash("Invalid end datetime format.", "error")
+        return redirect(url_for("view_experiment", experiment_id=exp.id))
     db.session.commit()
     flash("Experiment updated.", "ok")
     return redirect(url_for("view_experiment", experiment_id=exp.id))
@@ -266,6 +412,8 @@ class ProjectSampleAttribute(db.Model):
     sort_order = db.Column(db.Integer, default=0)
     # <-- NEW (optional)
     unit = db.Column(db.String(32))
+    # Whether this attribute should be inherited by child samples and locked there
+    inherited = db.Column(db.Boolean, default=False)
 
     project = db.relationship(
         "Project",
@@ -289,6 +437,187 @@ class SampleAttributeValue(db.Model):
     sample = db.relationship("Sample", backref=db.backref(
         "attribute_values", cascade="all, delete-orphan"))
     attribute = db.relationship("ProjectSampleAttribute")
+
+
+# ---- New models for Sample Classes and Equipment tracking ----
+
+
+class SampleClass(db.Model):
+    __tablename__ = "sample_class"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(160), nullable=False, unique=True)
+    slug = db.Column(db.String(160), nullable=True, unique=True)
+    description = db.Column(db.Text)
+    attributes_json = db.Column(db.Text)  # JSON string describing class attributes/defaults
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class ProjectSampleClass(db.Model):
+    __tablename__ = "project_sample_class"
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey("project.id"), nullable=False)
+    sample_class_id = db.Column(db.Integer, db.ForeignKey("sample_class.id"), nullable=False)
+    name_override = db.Column(db.String(160))
+    attributes_override_json = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    project = db.relationship("Project")
+    sample_class = db.relationship("SampleClass")
+
+
+# Add class links to existing Sample model (nullable for backward compat)
+# NOTE: Sample class is defined earlier in this file; we add columns dynamically
+try:
+    if not hasattr(Sample, 'sample_class_id'):
+        Sample.sample_class_id = db.Column(db.Integer, db.ForeignKey('sample_class.id'), nullable=True)
+        Sample.project_class_id = db.Column(db.Integer, db.ForeignKey('project_sample_class.id'), nullable=True)
+        Sample.class_attrs_json = db.Column(db.Text)
+        Sample.stock_material_id = db.Column(db.Integer, db.ForeignKey('stock_material.id'), nullable=True)
+        Sample.sample_class = db.relationship('SampleClass', foreign_keys=[Sample.sample_class_id])
+        Sample.project_class = db.relationship('ProjectSampleClass', foreign_keys=[Sample.project_class_id])
+        Sample.stock_material = db.relationship('StockMaterial', foreign_keys=[Sample.stock_material_id])
+except NameError:
+    # If Sample isn't in globals yet (unexpected), ignore; models will be wired when file loads normally
+    pass
+
+
+class Equipment(db.Model):
+    __tablename__ = 'equipment'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    model = db.Column(db.String(200))
+    serial_number = db.Column(db.String(200), unique=True)
+    location = db.Column(db.String(200))
+    manufacturer = db.Column(db.String(200))
+    purchase_date = db.Column(db.Date)
+    max_weight = db.Column(db.Float)  # optional
+    temperature_compensation_json = db.Column(db.Text)  # JSON string for coefficients
+    status = db.Column(db.String(32), default='active')  # active/retired
+    calibration_interval_days = db.Column(db.Integer)  # default schedule in days
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # optional project scoping for equipment (nullable)
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=True)
+    project = db.relationship('Project', foreign_keys=[project_id])
+
+    def last_calibration(self):
+        return CalibrationLog.query.filter_by(equipment_id=self.id).order_by(CalibrationLog.performed_at.desc()).first()
+
+    def next_due_date(self):
+        last = self.last_calibration()
+        if not last or not self.calibration_interval_days:
+            return None
+        return last.performed_at + timedelta(days=self.calibration_interval_days)
+
+    def calibration_status(self, warn_days=7):
+        """Return 'no_schedule', 'ok', 'due_soon', or 'overdue'"""
+        nd = self.next_due_date()
+        if nd is None:
+            return 'no_schedule'
+        now = datetime.utcnow()
+        if nd < now:
+            return 'overdue'
+        if nd - now <= timedelta(days=warn_days):
+            return 'due_soon'
+        return 'ok'
+
+
+class MaintenanceLog(db.Model):
+    __tablename__ = 'maintenance_log'
+    id = db.Column(db.Integer, primary_key=True)
+    equipment_id = db.Column(db.Integer, db.ForeignKey('equipment.id'), nullable=False)
+    performed_by = db.Column(db.String(200))
+    performed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    maintenance_type = db.Column(db.String(100))
+    notes = db.Column(db.Text)
+    next_due_date = db.Column(db.DateTime)
+
+    equipment = db.relationship('Equipment', backref=db.backref('maintenance_logs', cascade='all, delete-orphan'))
+
+
+class CalibrationLog(db.Model):
+    __tablename__ = 'calibration_log'
+    id = db.Column(db.Integer, primary_key=True)
+    equipment_id = db.Column(db.Integer, db.ForeignKey('equipment.id'), nullable=False)
+    performed_by = db.Column(db.String(200))
+    performed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    values_json = db.Column(db.Text)   # JSON list of {"ref": <value>, "measured": <value>} or simple pairs
+    temperature = db.Column(db.Float)
+    summary_json = db.Column(db.Text)  # computed summary (bias, slope, r2, etc.) as JSON string
+    next_due_date = db.Column(db.DateTime)
+
+    equipment = db.relationship('Equipment', backref=db.backref('calibration_logs', cascade='all, delete-orphan'))
+
+
+class SampleMeasurement(db.Model):
+    __tablename__ = 'sample_measurement'
+    id = db.Column(db.Integer, primary_key=True)
+    sample_id = db.Column(db.Integer, db.ForeignKey('sample.id'), nullable=False)
+    experiment_id = db.Column(db.Integer, db.ForeignKey('experiment.id'))
+    equipment_id = db.Column(db.Integer, db.ForeignKey('equipment.id'))
+    measured_at = db.Column(db.DateTime, default=datetime.utcnow)
+    operator = db.Column(db.String(200))
+    values_json = db.Column(db.Text)  # JSON payload for measurement channels
+    temperature = db.Column(db.Float)
+    metadata_json = db.Column(db.Text)
+
+    sample = db.relationship('Sample', backref=db.backref('measurements', cascade='all, delete-orphan'))
+    experiment = db.relationship('Experiment')
+    equipment = db.relationship('Equipment')
+
+
+class ExperimentEquipment(db.Model):
+    __tablename__ = 'experiment_equipment'
+    id = db.Column(db.Integer, primary_key=True)
+    experiment_id = db.Column(db.Integer, db.ForeignKey('experiment.id'), nullable=False)
+    equipment_id = db.Column(db.Integer, db.ForeignKey('equipment.id'), nullable=False)
+    role = db.Column(db.String(80))
+    notes = db.Column(db.Text)
+
+    experiment = db.relationship('Experiment', backref=db.backref('equipment_links', cascade='all, delete-orphan'))
+    equipment = db.relationship('Equipment')
+
+
+class StockMaterial(db.Model):
+    __tablename__ = 'stock_material'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    description = db.Column(db.Text)
+    lot_number = db.Column(db.String(120))
+    quantity = db.Column(db.Float)
+    unit = db.Column(db.String(64))
+    location = db.Column(db.String(200))
+    manufacturer = db.Column(db.String(200))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # optional link to a SampleClass (categorize stock materials)
+    sample_class_id = db.Column(db.Integer, db.ForeignKey('sample_class.id'), nullable=True)
+    sample_class = db.relationship('SampleClass', foreign_keys=[sample_class_id])
+
+    def __repr__(self):
+        return f"<StockMaterial {self.id} {self.name}>"
+
+
+class SOP(db.Model):
+    __tablename__ = 'sop'
+    id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(255), nullable=False)
+    content = db.Column(db.Text)
+    version = db.Column(db.String(32))
+    effective_date = db.Column(db.Date)
+    created_by = db.Column(db.String(200))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class ExperimentLog(db.Model):
+    __tablename__ = 'experiment_log'
+    id = db.Column(db.Integer, primary_key=True)
+    experiment_id = db.Column(db.Integer, db.ForeignKey('experiment.id'), nullable=False)
+    user = db.Column(db.String(200))
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    notes = db.Column(db.Text)
+    attachments_json = db.Column(db.Text)
+
+    experiment = db.relationship('Experiment', backref=db.backref('logs', cascade='all, delete-orphan'))
+
 
 
 # --- Helpers ---
@@ -334,24 +663,6 @@ def sample_upload_dir(sample_id: int) -> str:
     os.makedirs(d, exist_ok=True)
     return d
 
-
-def build_lineage(sample):
-    chain = []
-    cur = sample.parent
-    while cur:
-        chain.insert(0, cur)  # root → ... → parent
-        cur = cur.parent
-    return chain
-
-
-def build_experiment_lineage(exp):
-    """Return list [root ... parent] for breadcrumb display."""
-    chain = []
-    cur = exp.parent
-    while cur:
-        chain.insert(0, cur)
-        cur = cur.parent
-    return chain
 
 
 def get_experiment_descendant_ids(exp):
@@ -501,6 +812,19 @@ def get_full_experiment_chain(exp):
     return chain
 
 
+def safe_json_loads(text, default=None):
+    """Safely load JSON from text, returning default on error or when text is falsy.
+
+    Use default=[] for expecting arrays.
+    """
+    if not text:
+        return default if default is not None else []
+    try:
+        return json.loads(text)
+    except Exception:
+        return default if default is not None else []
+
+
 def link_sample_to_experiment_with_lineage(sample, selected_exp, role="other", notes=""):
     """
     Create SampleExperiment links for the selected experiment AND all of its ancestors.
@@ -524,33 +848,6 @@ def link_sample_to_experiment_with_lineage(sample, selected_exp, role="other", n
                 notes=link_notes
             ))
     db.session.commit()
-
-
-def get_sample_lineage(sample):
-    """Return [root, ..., sample]."""
-    chain = []
-    cur = sample
-    while cur:
-        chain.insert(0, cur)
-        cur = cur.parent
-    return chain
-
-
-def get_sample_root(sample):
-    cur = sample
-    while cur.parent is not None:
-        cur = cur.parent
-    return cur
-
-
-def serialize_experiment_tree(node, current_id):
-    kids = sorted(node.children, key=lambda e: (e.title or "").lower())
-    return {
-        "id": node.id,
-        "title": node.title,
-        "is_current": node.id == current_id,
-        "children": [serialize_experiment_tree(c, current_id) for c in kids],
-    }
 
 
 # --- Routes ---
@@ -645,13 +942,50 @@ def auth_logout():
 
 @app.route("/")
 def index():
-    projects = Project.query.order_by(Project.created_at.desc()).all()
+    try:
+        projects = Project.query.order_by(Project.created_at.desc()).all()
+    except OperationalError as e:
+        app.logger.warning('OperationalError querying Projects index, attempting runtime migration: %s', e)
+        try:
+            ensure_runtime_columns_once()
+        except Exception:
+            pass
+        # retry once
+        projects = Project.query.order_by(Project.created_at.desc()).all()
     # expects {{ projects }}
     return render_template("index.html", projects=projects)
 
 
+@app.route('/projects/all')
+def all_projects():
+    try:
+        today = datetime.utcnow().date()
+        # Current projects: have a start_date and no end_date set
+        current = Project.query.filter(Project.start_date != None, Project.end_date == None).order_by(Project.start_date.asc()).all()
+        # Archive: end_date set and before today
+        archive = Project.query.filter(Project.end_date != None, Project.end_date < today).order_by(Project.end_date.desc()).all()
+    except OperationalError as e:
+        app.logger.warning('OperationalError querying Projects list, attempting runtime migration: %s', e)
+        try:
+            add_column_if_missing('project', 'start_date', 'DATE')
+            add_column_if_missing('project', 'end_date', 'DATE')
+        except Exception:
+            pass
+        # retry
+        today = datetime.utcnow().date()
+        current = Project.query.filter(Project.start_date != None, Project.end_date == None).order_by(Project.start_date.asc()).all()
+        archive = Project.query.filter(Project.end_date != None, Project.end_date < today).order_by(Project.end_date.desc()).all()
+
+    return render_template('all_projects.html', current=current, archive=archive)
+
+
 @app.before_request
 def require_login_for_all_pages():
+    # ensure runtime columns present (attempt once)
+    try:
+        ensure_runtime_columns_once()
+    except Exception:
+        pass
     ep = request.endpoint or ""
 
     # Allow some endpoints without login
@@ -664,7 +998,8 @@ def require_login_for_all_pages():
 
     if current_user.is_authenticated:
         return
-    return redirect(url_for("login", next=request.url))
+    # Redirect to canonical login view (auth_login) to support login_manager configuration
+    return redirect(url_for("auth_login", next=request.url))
 
 
 @app.post("/project/<int:project_id>/set-pi")
@@ -692,6 +1027,39 @@ def set_project_pi(project_id):
     db.session.commit()
     flash("PI updated.", "ok")
     return redirect(url_for("view_project", project_id=project.id))
+
+
+@app.post('/project/<int:project_id>/edit-dates')
+@login_required
+def edit_project_dates(project_id):
+    project = Project.query.get_or_404(project_id)
+    if not can_manage_project(project):
+        abort(403)
+
+    start_raw = (request.form.get('start_date') or '').strip()
+    end_raw = (request.form.get('end_date') or '').strip()
+
+    try:
+        if start_raw:
+            project.start_date = datetime.fromisoformat(start_raw).date()
+        else:
+            project.start_date = None
+    except Exception:
+        flash('Invalid project start date format.', 'error')
+        return redirect(url_for('view_project', project_id=project.id))
+
+    try:
+        if end_raw:
+            project.end_date = datetime.fromisoformat(end_raw).date()
+        else:
+            project.end_date = None
+    except Exception:
+        flash('Invalid project end date format.', 'error')
+        return redirect(url_for('view_project', project_id=project.id))
+
+    db.session.commit()
+    flash('Project dates updated.', 'ok')
+    return redirect(url_for('view_project', project_id=project.id))
 
 
 # ---- Sample Attributes ----
@@ -770,6 +1138,84 @@ def delete_sample_attribute(attr_id):
     return redirect(url_for("view_project", project_id=pid))
 
 
+@app.route("/project/<int:project_id>/sample-classes/add", methods=["POST"])
+def add_project_sample_class(project_id):
+    project = Project.query.get_or_404(project_id)
+    if not can_manage_project(project):
+        abort(403)
+    psc_id = request.form.get('psc_id', type=int)
+    sample_class_id = request.form.get('sample_class_id', type=int)
+    name_override = (request.form.get('name_override') or '').strip() or None
+    attrs_raw = (request.form.get('attributes') or '').strip()
+
+    if not sample_class_id:
+        flash('Select a Sample Class to add to this project.', 'error')
+        return redirect(url_for('view_project', project_id=project.id))
+
+    try:
+        attrs = json.loads(attrs_raw) if attrs_raw else None
+        if attrs is not None and not isinstance(attrs, list):
+            raise ValueError('attributes must be a JSON array')
+    except Exception as e:
+        flash('Invalid attributes JSON: ' + str(e), 'error')
+        return redirect(url_for('view_project', project_id=project.id))
+
+    if psc_id:
+        psc = ProjectSampleClass.query.get_or_404(psc_id)
+        if psc.project_id != project.id:
+            abort(403)
+        psc.sample_class_id = sample_class_id
+        psc.name_override = name_override
+        psc.attributes_override_json = json.dumps(attrs) if attrs is not None else None
+    else:
+        psc = ProjectSampleClass(project_id=project.id, sample_class_id=sample_class_id,
+                                 name_override=name_override, attributes_override_json=json.dumps(attrs) if attrs is not None else None)
+        db.session.add(psc)
+
+    db.session.commit()
+    flash('Project sample class saved.', 'ok')
+    return redirect(url_for('view_project', project_id=project.id))
+
+
+@app.route('/project/<int:project_id>/sample-classes/<int:psc_id>/delete', methods=['POST'])
+def delete_project_sample_class(project_id, psc_id):
+    project = Project.query.get_or_404(project_id)
+    if not can_manage_project(project):
+        abort(403)
+    psc = ProjectSampleClass.query.get_or_404(psc_id)
+    if psc.project_id != project.id:
+        abort(403)
+    db.session.delete(psc)
+    db.session.commit()
+    flash('Project sample class removed.', 'ok')
+    return redirect(url_for('view_project', project_id=project.id))
+
+
+@app.route('/api/project/<int:project_id>/sample-class/<int:class_id>/attrs')
+def api_project_class_attrs(project_id, class_id):
+    # Return merged attributes: lab-level class attrs overridden/extended by project-specific attrs
+    sc = SampleClass.query.get_or_404(class_id)
+    base_attrs = safe_json_loads(sc.attributes_json, [])
+
+    psc = ProjectSampleClass.query.filter_by(project_id=project_id, sample_class_id=class_id).first()
+    if psc and psc.attributes_override_json:
+        override = safe_json_loads(psc.attributes_override_json, [])
+        # simple merge: attributes with same name replaced by override; new ones appended
+        merged = []
+        names = {a.get('name'): a for a in override}
+        for a in base_attrs:
+            if a.get('name') in names:
+                merged.append(names.pop(a.get('name')))
+            else:
+                merged.append(a)
+        # append any remaining overrides
+        merged.extend(names.values())
+    else:
+        merged = base_attrs
+
+    return jsonify(merged)
+
+
 @app.route("/api/project/<int:project_id>/sample-attrs")
 def api_project_sample_attrs(project_id):
     attrs = get_project_attrs(project_id)
@@ -780,10 +1226,20 @@ def api_project_sample_attrs(project_id):
             "name": a.name,
             "field_type": a.field_type,
             "required": bool(a.required),
-            "choices": (json.loads(a.choices_json) if a.choices_json else []),
-            "unit": a.unit or ""
+            "choices": safe_json_loads(a.choices_json, []),
+            "unit": a.unit or "",
+            "inherited": bool(getattr(a, 'inherited', False))
         }
     return jsonify([serialize(a) for a in attrs])
+
+
+@app.route('/api/sample/<int:sample_id>/attr-values')
+def api_sample_attr_values(sample_id):
+    s = Sample.query.get_or_404(sample_id)
+    root = get_sample_root(s)
+    vals = SampleAttributeValue.query.filter_by(sample_id=root.id).all()
+    out = {str(v.attribute_id): v.value for v in vals}
+    return jsonify(out)
 
 # ---- Projects ----
 
@@ -803,7 +1259,18 @@ def create_project():
 
 @app.route("/project/<int:project_id>")
 def view_project(project_id):
-    project = Project.query.get_or_404(project_id)
+    try:
+        project = Project.query.get_or_404(project_id)
+    except OperationalError as e:
+        # likely missing columns on older SQLite DBs; attempt to add them then retry once
+        app.logger.warning('OperationalError querying Project, attempting runtime migration: %s', e)
+        try:
+            add_column_if_missing('project', 'start_date', 'DATE')
+            add_column_if_missing('project', 'end_date', 'DATE')
+        except Exception:
+            pass
+        # retry
+        project = Project.query.get_or_404(project_id)
 
     roots = (Sample.query
              .filter_by(project_id=project.id, parent_id=None)
@@ -814,13 +1281,159 @@ def view_project(project_id):
     pi_candidates = get_db_members_for_project(project)
     can_manage = can_manage_project(project)
 
+    # sample class options (lab-level) and project-specific sample classes
+    sample_classes = SampleClass.query.order_by(SampleClass.name.asc()).all()
+    project_sample_classes = ProjectSampleClass.query.filter_by(project_id=project.id).all()
+
     return render_template(
         "project.html",
         project=project,
         sample_tree=sample_tree,
         pi_candidates=pi_candidates,
         can_manage=can_manage,
+        sample_classes=sample_classes,
+        project_sample_classes=project_sample_classes,
     )
+
+
+@app.route('/project/<int:project_id>/timeline')
+def project_timeline(project_id):
+    """Return timeline events for the project grouped by year-month.
+    Events returned include experiments (start/end/created), sample creations,
+    maintenance and calibration entries for equipment used in project experiments,
+    measurements, documents and experiment logs.
+    """
+    project = Project.query.get_or_404(project_id)
+    events = []
+
+    # experiments
+    exps = project.experiments or []
+    for e in exps:
+        # only include explicit start/end times on the timeline (omit creation time)
+        if getattr(e, 'start_at', None):
+            events.append({
+                'type': 'experiment_start',
+                'timestamp': e.start_at.isoformat(),
+                'title': e.title,
+                'id': e.id,
+                'url': url_for('view_experiment', experiment_id=e.id)
+            })
+        if getattr(e, 'end_at', None):
+            events.append({
+                'type': 'experiment_end',
+                'timestamp': e.end_at.isoformat(),
+                'title': e.title,
+                'id': e.id,
+                'url': url_for('view_experiment', experiment_id=e.id)
+            })
+
+    # samples (creation)
+    for s in project.samples:
+        if s.created_at:
+            events.append({
+                'type': 'sample_created',
+                'timestamp': s.created_at.isoformat(),
+                'title': s.name,
+                'id': s.id,
+                'url': url_for('view_sample', sample_id=s.id)
+            })
+
+    # equipment used in this project's experiments
+    exp_ids = [e.id for e in exps]
+    eq_ids = set()
+    if exp_ids:
+        for e in exps:
+            for link in getattr(e, 'equipment_links', []):
+                eq_ids.add(link.equipment_id)
+
+    if eq_ids:
+        m_logs = MaintenanceLog.query.filter(MaintenanceLog.equipment_id.in_(list(eq_ids))).all()
+        for m in m_logs:
+            if m.performed_at:
+                events.append({
+                    'type': 'maintenance',
+                    'timestamp': m.performed_at.isoformat(),
+                    'title': f"Maintenance ({m.maintenance_type or 'maintenance'})",
+                    'id': m.id,
+                    'equipment_id': m.equipment_id,
+                    'performed_by': m.performed_by,
+                    'url': url_for('view_equipment', equipment_id=m.equipment_id) if 'view_equipment' in globals() else None
+                })
+
+        cal_logs = CalibrationLog.query.filter(CalibrationLog.equipment_id.in_(list(eq_ids))).all()
+        for c in cal_logs:
+            if c.performed_at:
+                events.append({
+                    'type': 'calibration',
+                    'timestamp': c.performed_at.isoformat(),
+                    'title': 'Calibration',
+                    'id': c.id,
+                    'equipment_id': c.equipment_id,
+                    'performed_by': c.performed_by,
+                    'url': url_for('view_equipment', equipment_id=c.equipment_id) if 'view_equipment' in globals() else None
+                })
+
+    # measurements attached to experiments
+    if exp_ids:
+        measurements = SampleMeasurement.query.filter(SampleMeasurement.experiment_id.in_(exp_ids)).all()
+        for m in measurements:
+            if m.measured_at:
+                events.append({
+                    'type': 'measurement',
+                    'timestamp': m.measured_at.isoformat(),
+                    'title': f"Measurement (sample {m.sample_id})",
+                    'id': m.id,
+                    'sample_id': m.sample_id,
+                    'experiment_id': m.experiment_id,
+                    'equipment_id': m.equipment_id,
+                    'url': url_for('view_sample', sample_id=m.sample_id) if 'view_sample' in globals() else None
+                })
+
+    # experiment logs & documents
+    for e in exps:
+        for l in getattr(e, 'logs', []):
+            if l.timestamp:
+                events.append({
+                    'type': 'experiment_log',
+                    'timestamp': l.timestamp.isoformat(),
+                    'title': 'Log entry',
+                    'id': l.id,
+                    'notes': l.notes,
+                    'url': url_for('view_experiment', experiment_id=e.id)
+                })
+        for d in getattr(e, 'documents', []):
+            if d.uploaded_at:
+                events.append({
+                    'type': 'document',
+                    'timestamp': d.uploaded_at.isoformat(),
+                    'title': d.filename,
+                    'id': d.id,
+                    'url': url_for('view_experiment', experiment_id=e.id)
+                })
+
+    # server-side filtering by event types (optional)
+    types_param = (request.args.get('types') or '').strip()
+    if types_param:
+        allowed = set([t.strip() for t in types_param.split(',') if t.strip()])
+        events = [ev for ev in events if ev.get('type') in allowed]
+
+    # Group by year-month
+    grouped = {}
+    for ev in events:
+        try:
+            ts = ev.get('timestamp')
+            # ts is ISO string; extract YYYY-MM
+            key = ts[:7]
+        except Exception:
+            key = 'unknown'
+        grouped.setdefault(key, []).append(ev)
+
+    # sort events in each month descending
+    for k in grouped:
+        grouped[k].sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+    # return a simple JSON mapping month->list
+    return jsonify(grouped)
 
 
 @app.route("/project/<int:project_id>/experiments/create", methods=["POST"])
@@ -866,6 +1479,15 @@ def view_experiment(experiment_id):
     sample_roots = [s for s in exp.project.samples if not s.parent_id]
     linked_sample_tree = [serialize_sample_tree(r) for r in sample_roots]
 
+    # equipment choices scoped to project (nullable project_id means global)
+    try:
+        equipment_choices = Equipment.query.filter(
+            (Equipment.project_id == exp.project_id) | (Equipment.project_id == None)
+        ).order_by(Equipment.name).all()
+    except Exception:
+        # If Equipment has no project_id column yet (older DB), fall back to all equipment
+        equipment_choices = Equipment.query.order_by(Equipment.name).all()
+
     return render_template(
         "experiment.html",
         experiment=exp,
@@ -874,6 +1496,7 @@ def view_experiment(experiment_id):
         child_choices=child_choices,
         linked_sample_tree=linked_sample_tree[0] if linked_sample_tree else None,
         linked_sample_ids=linked_ids,
+        equipment_choices=equipment_choices,
     )
 
 
@@ -897,6 +1520,70 @@ def split_experiment(experiment_id):
     db.session.commit()
     flash("Child experiment created.", "ok")
     return redirect(url_for("view_experiment", experiment_id=child.id))
+
+
+@app.route("/experiment/<int:experiment_id>/equipment/add", methods=["POST"])
+def add_experiment_equipment(experiment_id):
+    exp = Experiment.query.get_or_404(experiment_id)
+    equipment_id = request.form.get("equipment_id", type=int)
+    role = (request.form.get("role") or "").strip()
+    notes = (request.form.get("notes") or "").strip()
+    if not equipment_id:
+        flash("Equipment selection required.", "error")
+        return redirect(url_for("view_experiment", experiment_id=exp.id))
+    eq = Equipment.query.get_or_404(equipment_id)
+    link = ExperimentEquipment(experiment_id=exp.id, equipment_id=eq.id, role=role, notes=notes)
+    db.session.add(link)
+    db.session.commit()
+    flash("Equipment linked.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=exp.id))
+
+
+@app.route("/experiment/<int:experiment_id>/child-sample/create", methods=["POST"])
+def experiment_create_child_sample(experiment_id):
+    exp = Experiment.query.get_or_404(experiment_id)
+    parent_sample_id = request.form.get("parent_sample_id", type=int)
+    child_name = (request.form.get("name") or "").strip()
+    if not parent_sample_id or not child_name:
+        flash("Parent sample and child name required.", "error")
+        return redirect(url_for("view_experiment", experiment_id=exp.id))
+    parent = Sample.query.get_or_404(parent_sample_id)
+    if parent.project_id != exp.project_id:
+        flash("Selected sample does not belong to this project.", "error")
+        return redirect(url_for("view_experiment", experiment_id=exp.id))
+
+    child = Sample(
+        project_id=exp.project_id,
+        parent_id=parent.id,
+        name=child_name,
+        creator_id=_uid(),
+        stock_material_id = getattr(get_sample_root(parent), 'stock_material_id', None),
+    )
+    # copy class attrs if present
+    child.class_attrs_json = getattr(parent, 'class_attrs_json', None)
+    db.session.add(child)
+    db.session.commit()
+
+    # copy attribute values from parent to child
+    try:
+        vals = SampleAttributeValue.query.filter_by(sample_id=parent.id).all()
+        for v in vals:
+            nv = SampleAttributeValue(
+                sample_id=child.id,
+                attribute_id=v.attribute_id,
+                value=v.value,
+                is_placeholder=getattr(v, 'is_placeholder', False)
+            )
+            db.session.add(nv)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+    # link the new child to this experiment
+    db.session.add(SampleExperiment(sample_id=child.id, experiment_id=exp.id))
+    db.session.commit()
+    flash("Child sample created and linked to experiment.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=exp.id))
 
 
 @app.route("/experiment/<int:experiment_id>/reparent", methods=["POST"])
@@ -1009,9 +1696,22 @@ def list_samples():
         for e in Experiment.query.order_by(Experiment.created_at.desc()).all()
     ]
     sample_opts = [
-        {"id": s.id, "name": s.name, "project_id": s.project_id}
+        {"id": s.id, "name": s.name, "project_id": s.project_id, "stock_material_id": (s.stock_material_id if hasattr(s, 'stock_material_id') else None)}
         for s in Sample.query.order_by(Sample.created_at.desc()).all()
     ]
+    stock_material_opts = [
+        {"id": m.id, "name": m.name, "lot_number": m.lot_number}
+        for m in StockMaterial.query.order_by(StockMaterial.name.asc()).all()
+    ]
+    sample_class_opts = []
+    for sc in SampleClass.query.order_by(SampleClass.name.asc()).all():
+        attrs = safe_json_loads(sc.attributes_json, [])
+        sample_class_opts.append({
+            "id": sc.id,
+            "name": sc.name,
+            "description": sc.description,
+            "attributes": attrs,
+        })
 
     return render_template(
         "samples.html",
@@ -1020,9 +1720,100 @@ def list_samples():
         roots_by_project=roots_by_project,
         experiment_opts=experiment_opts,
         sample_opts=sample_opts,
+        sample_class_opts=sample_class_opts,
         q=q,
         view=view,
+        stock_material_opts=stock_material_opts,
     )
+
+
+@app.route('/api/sample-classes')
+def api_sample_classes():
+    out = []
+    for sc in SampleClass.query.order_by(SampleClass.name.asc()).all():
+        try:
+            attrs = safe_json_loads(sc.attributes_json, [])
+        except Exception:
+            attrs = []
+        out.append({
+            'id': sc.id,
+            'name': sc.name,
+            'description': sc.description,
+            'attributes': attrs,
+        })
+    return jsonify(out)
+
+
+@app.route('/stock-materials')
+def list_stock_materials():
+    sample_classes = SampleClass.query.order_by(SampleClass.name.asc()).all()
+    materials = StockMaterial.query.order_by(StockMaterial.name.asc()).all()
+    materials_by_class = {sc.id: [] for sc in sample_classes}
+    uncategorized = []
+    for m in materials:
+        if m.sample_class_id:
+            materials_by_class.setdefault(m.sample_class_id, []).append(m)
+        else:
+            uncategorized.append(m)
+    return render_template('stock_inventory.html', sample_classes=sample_classes, materials_by_class=materials_by_class, uncategorized=uncategorized)
+
+
+@app.route('/stock-materials/create', methods=['POST'])
+def create_stock_material():
+    name = (request.form.get('name') or '').strip()
+    if not name:
+        flash('Name required for stock material.', 'error')
+        return redirect(url_for('list_stock_materials'))
+    m = StockMaterial(
+        name=name,
+        lot_number=(request.form.get('lot_number') or '').strip(),
+        quantity=request.form.get('quantity', type=float),
+        unit=(request.form.get('unit') or '').strip(),
+        location=(request.form.get('location') or '').strip(),
+        manufacturer=(request.form.get('manufacturer') or '').strip(),
+        description=(request.form.get('description') or '').strip(),
+        sample_class_id=request.form.get('sample_class_id', type=int)
+    )
+    db.session.add(m)
+    db.session.commit()
+    flash('Stock material created.', 'ok')
+    return redirect(url_for('list_stock_materials'))
+
+
+@app.route('/equipment')
+def list_equipment():
+    # Show all equipment; project filtering available in experiment pages
+    eqs = Equipment.query.order_by(Equipment.name.asc()).all()
+    return render_template('equipment.html', equipment=eqs)
+
+
+@app.route('/sample-classes/create', methods=['POST'])
+def create_sample_class():
+    name = (request.form.get('name') or '').strip()
+    description = (request.form.get('description') or '').strip()
+    slug = (request.form.get('slug') or '').strip()
+    attrs_raw = (request.form.get('attributes') or '').strip()
+    if not name:
+        flash('Sample class name is required.', 'error')
+        return redirect(url_for('list_samples'))
+
+    if not slug:
+        slug = re.sub('[^0-9a-z]+', '_', name.lower())
+
+    # attrs_raw is expected to be JSON array of attribute objects
+    try:
+        attrs = json.loads(attrs_raw) if attrs_raw else []
+        if not isinstance(attrs, list):
+            raise ValueError('attributes must be a JSON array')
+    except Exception as e:
+        flash('Invalid attributes JSON: ' + str(e), 'error')
+        return redirect(url_for('list_samples'))
+
+    sc = SampleClass(name=name, slug=slug, description=description, attributes_json=json.dumps(attrs))
+    db.session.add(sc)
+    db.session.commit()
+    flash('Sample class created.', 'ok')
+    return redirect(url_for('list_samples'))
 
 
 @app.route("/samples/create", methods=["POST"])
@@ -1044,16 +1835,52 @@ def create_sample():
         flash("Project (or parent) and sample name are required.", "error")
         return redirect(url_for("list_samples"))
 
+    # Handle sample class attributes (lab-level classes)
+    sample_class_id = request.form.get('sample_class_id', type=int)
+    class_attrs = []
+    class_values = {}
+    if sample_class_id:
+        sc = SampleClass.query.get(sample_class_id)
+        if sc:
+            class_attrs = safe_json_loads(sc.attributes_json, [])
+            # validate and collect values
+            for a in class_attrs:
+                aname = a.get('name')
+                # slugify attribute name for form field
+                slug = re.sub('[^0-9a-z]+', '_', (aname or '').lower())
+                key = f'sc_{slug}'
+                val = (request.form.get(key) or '').strip()
+                if a.get('required') and not val:
+                    flash(f"Missing required class attribute: {aname}", 'error')
+                    return redirect(url_for('list_samples', view=request.args.get('view', 'project')))
+                class_values[aname] = val
+
     # validate dynamic attributes (your existing logic here) ...
     attrs = get_project_attrs(project_id)
     values_to_save = []
     missing = []
     for a in attrs:
         key = f"attr_{a.id}"
-        val = (request.form.get(key) or "").strip()
-        if a.required and not val:
-            missing.append(a.name)
-        values_to_save.append((a.id, val))
+        # If attribute is marked inherited, pull value from root parent (if any)
+        if getattr(a, 'inherited', False):
+            if parent:
+                root = get_sample_root(parent)
+                pav = SampleAttributeValue.query.filter_by(sample_id=root.id, attribute_id=a.id).first()
+                val = (pav.value if pav else "")
+                if a.required and not val:
+                    missing.append(a.name)
+                values_to_save.append((a.id, val))
+            else:
+                # no parent to inherit from
+                val = ''
+                if a.required:
+                    missing.append(a.name)
+                values_to_save.append((a.id, val))
+        else:
+            val = (request.form.get(key) or "").strip()
+            if a.required and not val:
+                missing.append(a.name)
+            values_to_save.append((a.id, val))
     if missing:
         flash("Missing required attributes: " + ", ".join(missing), "error")
         return redirect(url_for("list_samples", view=request.args.get("view", "project")))
@@ -1061,6 +1888,15 @@ def create_sample():
     # create the sample
     sample = Sample(project_id=project_id, parent_id=(
         parent.id if parent else None), name=name, creator_id=_uid())
+    # handle stock material: only allow setting on root samples
+    stock_material_id = request.form.get('stock_material_id', type=int)
+    if parent:
+        # inherit from root parent
+        root = get_sample_root(parent)
+        sample.stock_material_id = getattr(root, 'stock_material_id', None)
+    else:
+        sample.stock_material_id = stock_material_id if stock_material_id else None
+
     db.session.add(sample)
     db.session.commit()
 
@@ -1069,6 +1905,20 @@ def create_sample():
         db.session.add(SampleAttributeValue(
             sample_id=sample.id, attribute_id=attr_id, value=val))
     db.session.commit()
+
+    # persist sample-class values if provided
+    if class_values:
+        try:
+            sample.sample_class_id = sample_class_id
+            sample.class_attrs_json = json.dumps(class_values)
+            db.session.add(sample)
+            db.session.commit()
+        except Exception:
+            # non-fatal: log and continue
+            pass
+
+        # If this is a root sample and it has a stock_material assigned, cascade to descendants (none yet),
+        # but keep helper for future edits where changing root cascades.
 
     # NEW: link to experiment + all ancestors (enforce same-project)
     if experiment_id:
@@ -1166,6 +2016,7 @@ def split_sample(sample_id):
         parent_id=parent.id,
         name=child_name,
         creator_id=_uid(),
+        stock_material_id = getattr(get_sample_root(parent), 'stock_material_id', None),
     )
     db.session.add(child)
     db.session.commit()
@@ -1207,7 +2058,7 @@ def view_sample(sample_id):
             "name": a.name,
             "field_type": a.field_type,
             "required": bool(a.required),
-            "choices": (json.loads(a.choices_json) if a.choices_json else []),
+            "choices": safe_json_loads(a.choices_json, []),
             "value": value,
             "is_placeholder": placeholder,
             "unit": a.unit or ""
@@ -1221,7 +2072,14 @@ def view_sample(sample_id):
         family_tree=serialize_sample_tree(get_sample_root(sample), sample.id),
         attr_defs=attr_defs,
         needs_update=needs_update,
+        stock_materials=StockMaterial.query.order_by(StockMaterial.name.asc()).all(),
     )
+
+
+@app.route('/stock/<int:stock_id>')
+def view_stock_material(stock_id):
+    mat = StockMaterial.query.get_or_404(stock_id)
+    return render_template('stock_material.html', mat=mat)
 
 
 @app.context_processor
@@ -1439,6 +2297,28 @@ def edit_sample(sample_id):
     if new_name:
         sample.name = new_name
 
+    # Only allow changing stock material on root samples
+    if not sample.parent_id:
+        new_sm = request.form.get('stock_material_id', type=int)
+        old_sm = getattr(sample, 'stock_material_id', None)
+        if new_sm and new_sm != old_sm:
+            sample.stock_material_id = new_sm
+            # cascade to descendants
+            def cascade_sm(s, smid):
+                for c in s.children:
+                    c.stock_material_id = smid
+                    cascade_sm(c, smid)
+            cascade_sm(sample, new_sm)
+        elif new_sm is None or new_sm == 0:
+            # clearing stock material
+            if old_sm:
+                sample.stock_material_id = None
+                def cascade_clear(s):
+                    for c in s.children:
+                        c.stock_material_id = None
+                        cascade_clear(c)
+                cascade_clear(sample)
+
     attrs = get_project_attrs(sample.project_id)
     existing = {v.attribute_id: v for v in sample.attribute_values}
 
@@ -1497,19 +2377,31 @@ with app.app_context():
     # Project
     add_column_if_missing("project", "pi_user_id",    "pi_user_id INTEGER")
     add_column_if_missing("project", "database_id",   "database_id INTEGER")
+    # Sample: ensure newly-added class-related columns exist for older DBs
+    add_column_if_missing("sample", "sample_class_id", "sample_class_id INTEGER")
+    add_column_if_missing("sample", "project_class_id", "project_class_id INTEGER")
+    add_column_if_missing("sample", "class_attrs_json", "class_attrs_json TEXT")
     add_column_if_missing("project", "visibility",    "visibility TEXT")
     add_column_if_missing("project", "creator_id",    "creator_id INTEGER")
 
     # Experiment
     add_column_if_missing("experiment", "parent_id",  "parent_id INTEGER")
     add_column_if_missing("experiment", "creator_id", "creator_id INTEGER")
+    add_column_if_missing("experiment", "start_at", "start_at DATETIME")
+    add_column_if_missing("experiment", "end_at", "end_at DATETIME")
 
     # Sample
     add_column_if_missing("sample", "parent_id",      "parent_id INTEGER")
     add_column_if_missing("sample", "creator_id",     "creator_id INTEGER")
+    add_column_if_missing("sample", "stock_material_id", "stock_material_id INTEGER")
+    # Equipment project scoping
+    add_column_if_missing("equipment", "project_id", "project_id INTEGER")
+    # Stock material sample class linking
+    add_column_if_missing("stock_material", "sample_class_id", "sample_class_id INTEGER")
 
     # Attributes / values
     add_column_if_missing("project_sample_attribute", "unit", "unit TEXT")
+    add_column_if_missing("project_sample_attribute", "inherited", "inherited BOOLEAN")
     add_column_if_missing("sample_attribute_value",
                           "is_placeholder", "is_placeholder BOOLEAN")
     add_column_if_missing("sample_attribute_value",

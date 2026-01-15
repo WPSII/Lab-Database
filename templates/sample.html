@@ -29,6 +29,16 @@
   </div>
 </div>
 
+{% if sample.stock_material %}
+  <div class="card card-body mb-3">
+    <h6 class="mb-1">Stock Material</h6>
+    <div>
+      <a href="{{ url_for('view_stock_material', stock_id=sample.stock_material.id) }}">{{ sample.stock_material.name }}</a>
+      {% if sample.stock_material.lot_number %} · <span class="text-muted">Lot {{ sample.stock_material.lot_number }}</span>{% endif %}
+    </div>
+  </div>
+{% endif %}
+
 {% if needs_update and needs_update > 0 %}
   <div class="alert alert-warning d-flex align-items-center" role="alert">
     <div>
@@ -125,6 +135,19 @@
           <label class="form-label">Sample Name</label>
           <input class="form-control" name="name" value="{{ sample.name }}" required>
         </div>
+
+        {% if not sample.parent %}
+          <div class="mb-3">
+            <label class="form-label">Stock Material (lab inventory)</label>
+            <select class="form-select" name="stock_material_id">
+              <option value="">(none)</option>
+              {% for m in stock_materials %}
+                <option value="{{ m.id }}" {% if sample.stock_material and sample.stock_material.id == m.id %}selected{% endif %}>{{ m.name }}{% if m.lot_number %} — {{ m.lot_number }}{% endif %}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">Only the root sample may change the stock material; changes will cascade to descendants.</div>
+          </div>
+        {% endif %}
 
         {% if attr_defs and attr_defs|length %}
           <h6 class="mt-2">Attributes</h6>

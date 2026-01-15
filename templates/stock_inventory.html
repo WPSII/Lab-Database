@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h2 class="mb-0">Stock Inventory</h2>
+    <div class="text-muted small">Catalog organized by Sample Class</div>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('list_samples') }}#sampleClassModal">Add Sample Class</a>
+    <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#createStockModal">New Stock Material</button>
+  </div>
+</div>
+
+{% for sc in sample_classes %}
+  <div class="card card-body mb-3">
+    <div class="d-flex justify-content-between align-items-center">
+      <h5 class="mb-0">{{ sc.name }}</h5>
+      <small class="text-muted">{{ (materials_by_class[sc.id] | length) }} items</small>
+    </div>
+    <div class="mt-2">
+      {% if materials_by_class[sc.id] %}
+        <ul class="list-group">
+          {% for m in materials_by_class[sc.id] %}
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              <div>
+                <a href="{{ url_for('view_stock_material', stock_id=m.id) }}"><strong>{{ m.name }}</strong></a>
+                <div class="small text-muted">Lot: {{ m.lot_number or '—' }} · {{ m.quantity or '—' }} {{ m.unit or '' }}</div>
+              </div>
+              <div>
+                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('view_stock_material', stock_id=m.id) }}">View</a>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="text-muted">No stock materials for this class.</div>
+      {% endif %}
+    </div>
+  </div>
+{% endfor %}
+
+{# Uncategorized materials #}
+<div class="card card-body mb-3">
+  <h5>Uncategorized</h5>
+  {% if uncategorized %}
+    <ul class="list-group">
+      {% for m in uncategorized %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <div>
+            <a href="{{ url_for('view_stock_material', stock_id=m.id) }}"><strong>{{ m.name }}</strong></a>
+            <div class="small text-muted">Lot: {{ m.lot_number or '—' }} · {{ m.quantity or '—' }} {{ m.unit or '' }}</div>
+          </div>
+          <div>
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('view_stock_material', stock_id=m.id) }}">View</a>
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="text-muted">No uncategorized stock materials.</div>
+  {% endif %}
+</div>
+
+<!-- Create Stock Material Modal -->
+<div class="modal fade" id="createStockModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('create_stock_material') }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Create Stock Material</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input class="form-control" name="name" required>
+          </div>
+          <div class="row g-2">
+            <div class="col-md-6 mb-3">
+              <label class="form-label">Lot number</label>
+              <input class="form-control" name="lot_number">
+            </div>
+            <div class="col-md-3 mb-3">
+              <label class="form-label">Quantity</label>
+              <input class="form-control" type="number" step="any" name="quantity">
+            </div>
+            <div class="col-md-3 mb-3">
+              <label class="form-label">Unit</label>
+              <input class="form-control" name="unit">
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Sample Class</label>
+            <select class="form-select" name="sample_class_id">
+              <option value="">(none)</option>
+              {% for sc in sample_classes %}
+                <option value="{{ sc.id }}">{{ sc.name }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">Optionally associate this stock material with a Sample Class.</div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Location</label>
+            <input class="form-control" name="location">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Manufacturer</label>
+            <input class="form-control" name="manufacturer">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Description</label>
+            <textarea class="form-control" name="description" rows="3"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-primary">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
