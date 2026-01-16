@@ -25,8 +25,7 @@ cd Lab-Database
 ### 2. Run the Build Script
 On **Windows (PowerShell):**
 ```powershell
-.
-run.ps1
+./run.ps1
 ```
 
 The script will:
