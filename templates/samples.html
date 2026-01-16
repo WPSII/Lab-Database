@@ -15,33 +15,36 @@
   </div>
 
   <div class="d-flex align-items-center gap-2">
-    <form class="d-flex" method="get" action="{{ url_for('list_samples') }}">
+    {% if lab_role in ['owner','admin','editor'] %}
+      <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#createSampleModal">Create New Sample</button>
+    {% endif %}
+    <form class="d-flex" method="get" action="{{ url_for('list_samples_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">
       <input type="hidden" name="view" value="{{ view }}">
       <input class="form-control me-2" name="q" value="{{ q or '' }}" placeholder="Search samples...">
       <button class="btn btn-outline-secondary">Search</button>
     </form>
     <div class="btn-group">
       <a class="btn btn-sm {% if view != 'project' %}btn-primary{% else %}btn-outline-primary{% endif %}"
-         href="{{ url_for('list_samples', view='flat', q=q) }}">Flat</a>
+        href="{{ url_for('list_samples_for_lab', lab_slug=(current_lab.slug or current_lab.id), view='flat', q=q) }}">Flat</a>
       <a class="btn btn-sm {% if view == 'project' %}btn-primary{% else %}btn-outline-primary{% endif %}"
-         href="{{ url_for('list_samples', view='project', q=q) }}">By Project</a>
+        href="{{ url_for('list_samples_for_lab', lab_slug=(current_lab.slug or current_lab.id), view='project', q=q) }}">By Project</a>
     </div>
   </div>
 </div>
 
 <div class="row g-3">
   <!-- LEFT: list or tree -->
-  <div class="col-lg-7">
+  <div class="col-lg-8">
 
     {% if view == 'flat' %}
       <ul class="list-group mb-3">
         {% for s in samples %}
           <li class="list-group-item d-flex justify-content-between align-items-center">
             <div>
-              <a href="{{ url_for('view_sample', sample_id=s.id) }}">{{ s.name }}</a>
+              <a href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=s.project.id, sample_id=s.id) }}">{{ s.name }}</a>
               <div class="small text-muted">
-                Project: <a href="{{ url_for('view_project', project_id=s.project.id) }}">{{ s.project.title }}</a>
-                {% if s.parent %} · child of <a href="{{ url_for('view_sample', sample_id=s.parent.id) }}">{{ s.parent.name }}</a>{% endif %}
+                Project: <a href="{{ url_for('view_project', lab_slug=(current_lab.slug or current_lab.id), project_id=s.project.id) }}">{{ s.project.title }}</a>
+                {% if s.parent %} · child of <a href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=s.parent.project.id, sample_id=s.parent.id) }}">{{ s.parent.name }}</a>{% endif %}
                 · {{ s.experiment_links | length }} linked experiment{% if (s.experiment_links | length) != 1 %}s{% endif %}
               </div>
             </div>
@@ -52,13 +55,13 @@
         {% endfor %}
       </ul>
     {% else %}
-      {% macro render_tree(node) -%}
+      {% macro render_tree(node, project_id) -%}
         <li class="mb-1">
-          <a href="{{ url_for('view_sample', sample_id=node.id) }}">{{ node.name }}</a>
+          <a href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=project_id, sample_id=node.id) }}">{{ node.name }}</a>
           {% if node.children %}
             <ul class="mt-1">
               {% for c in node.children %}
-                {{ render_tree(c) }}
+                {{ render_tree(c, project_id) }}
               {% endfor %}
             </ul>
           {% endif %}
@@ -68,16 +71,33 @@
       {% for p in projects %}
         <div class="card card-body mb-3">
           <h5 class="mb-2 d-flex align-items-center justify-content-between">
-            <a href="{{ url_for('view_project', project_id=p.id) }}">{{ p.title }}</a>
+            <a href="{{ url_for('view_project', lab_slug=(current_lab.slug or current_lab.id), project_id=p.id) }}">{{ p.title }}</a>
             <span class="badge bg-secondary">{{ p.samples|length }} samples</span>
           </h5>
-          {% set roots = roots_by_project.get(p.id, []) %}
-          {% if roots %}
-            <ul class="mb-0">
-              {% for r in roots %}
-                {{ render_tree(r) }}
-              {% endfor %}
-            </ul>
+          {% set groups = project_tree.get(p.id, []) %}
+          {% if groups %}
+            {% for g in groups %}
+              <div class="mb-2">
+                <div class="fw-semibold small text-uppercase text-muted">{{ g.class_name }}</div>
+                {% for stock in g.stocks %}
+                  <div class="ms-2 mb-2">
+                    <div class="d-flex align-items-center gap-2 fw-semibold">
+                      {% if stock.stock_id %}
+                        <a href="{{ url_for('view_stock_material', lab_slug=(current_lab.slug or current_lab.id), stock_id=stock.stock_id) }}">{{ stock.label }}</a>
+                        <span class="badge text-bg-info">Stock Material</span>
+                      {% else %}
+                        <span>{{ stock.label }}</span>
+                      {% endif %}
+                    </div>
+                    <ul class="mb-2 mt-1">
+                      {% for r in stock.roots %}
+                        {{ render_tree(r, p.id) }}
+                      {% endfor %}
+                    </ul>
+                  </div>
+                {% endfor %}
+              </div>
+            {% endfor %}
           {% else %}
             <p class="text-muted mb-0">No samples in this project.</p>
           {% endif %}
@@ -87,79 +107,136 @@
 
   </div>
 
-  <!-- RIGHT: create sample -->
-  <div class="col-lg-5">
-    <div class="card card-body" id="create-sample" style="max-width: 900px;">
-      <h5 class="mb-3">Create Sample</h5>
+  <!-- RIGHT: sample classes -->
+  <div class="col-lg-4">
+    <div class="card card-body mt-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Lab Sample Classes</h5>
+        {% if lab_role in ['owner','admin','editor'] %}
+          <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#sampleClassModal">New Class</button>
+        {% endif %}
+      </div>
+      <ul class="list-group">
+        {% for sc in sample_class_opts %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <div>
+              <div class="fw-semibold">{{ sc.name }}</div>
+              <div class="small text-muted">{{ sc.description or 'No description' }} · {{ sc.attributes|length }} attribute{{ '' if sc.attributes|length==1 else 's' }}</div>
+            </div>
+            {% if lab_role in ['owner','admin','editor'] %}
+              <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#sampleClassEditModal" data-sc='{{ sc|tojson }}'>Edit</button>
+            {% endif %}
+          </li>
+        {% else %}
+          <li class="list-group-item">No sample classes yet.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</div>
 
-      <form method="post" action="{{ url_for('create_sample') }}">
-        <div class="row g-2">
-          <div class="col-md-12">
-            <label class="form-label">Project</label>
-            <select class="form-select" id="project-select" name="project_id" required>
-              <option value="">Select a project…</option>
-              {% for p in projects %}
-                <option value="{{ p.id }}">{{ p.title }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="col-md-12">
-            <label class="form-label">Parent Sample (optional)</label>
-            <select class="form-select" id="parent-select" name="parent_id" disabled>
-              <option value="">Select a project first…</option>
-            </select>
-          </div>
-          <div class="col-md-12">
-            <label class="form-label">Sample Class (optional)</label>
-            <div class="input-group">
-              <select class="form-select" id="sample-class-select" name="sample_class_id">
-                <option value="">(none)</option>
+<!-- Create Sample modal -->
+<div class="modal fade" id="createSampleModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('create_sample_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Create Sample</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-2">
+            <div class="col-md-12">
+              <label class="form-label">Project</label>
+              <select class="form-select" id="project-select" name="project_id" required>
+                <option value="">Select a project…</option>
+                {% for p in projects %}
+                  <option value="{{ p.id }}">{{ p.title }}</option>
+                {% endfor %}
               </select>
-              <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#sampleClassModal">New Class</button>
+            </div>
+            <div class="col-md-12">
+              <label class="form-label">Parent Sample (optional)</label>
+              <select class="form-select" id="parent-select" name="parent_id" disabled>
+                <option value="">Select a project first…</option>
+              </select>
+            </div>
+            <div class="col-md-12">
+              <label class="form-label">Split from Stock Material?</label>
+              <div class="d-flex gap-3">
+                <div class="form-check">
+                  <input class="form-check-input" type="radio" name="from_stock" id="from-stock-yes" value="yes">
+                  <label class="form-check-label" for="from-stock-yes">Yes</label>
+                </div>
+                <div class="form-check">
+                  <input class="form-check-input" type="radio" name="from_stock" id="from-stock-no" value="no" checked>
+                  <label class="form-check-label" for="from-stock-no">No</label>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-12" id="stock-material-wrap" style="display:none;">
+              <label class="form-label">Stock Material (lab inventory)</label>
+              <select class="form-select" id="stock-material-select" name="stock_material_id" required>
+                <option value="">Select a stock material…</option>
+              </select>
+              <div class="form-text">Sample Class is inherited from the selected stock material. For child samples this is inherited from the root and cannot be changed.</div>
+              <div class="small text-muted mt-1" id="stock-class-label"></div>
+            </div>
+            <div class="col-md-6" id="sample-qty-wrap" style="display:none;">
+              <label class="form-label">Sample Quantity</label>
+              <div class="input-group">
+                <input class="form-control" id="sample-qty" name="sample_quantity" type="number" step="any" min="0">
+                <span class="input-group-text" id="sample-qty-unit"></span>
+              </div>
+            </div>
+            <div class="col-md-6" id="stock-old-qty-wrap" style="display:none;">
+              <label class="form-label">Old Stock Quantity</label>
+              <div class="input-group">
+                <input class="form-control" id="stock-old-qty" type="number" step="any" readonly>
+                <span class="input-group-text" id="stock-old-qty-unit"></span>
+              </div>
+            </div>
+            <div class="col-md-6" id="stock-qty-wrap" style="display:none;">
+              <label class="form-label">New Stock Quantity</label>
+              <div class="input-group">
+                <input class="form-control" id="stock-new-qty" name="stock_new_quantity" type="number" step="any" min="0">
+                <span class="input-group-text" id="stock-new-qty-unit"></span>
+              </div>
+              <div class="form-text">Required when splitting from stock material.</div>
+            </div>
+            <div class="col-md-12">
+              <label class="form-label">Sample Name</label>
+              <input class="form-control" name="name" required placeholder="e.g., SS316H Heat A">
             </div>
           </div>
-          <div class="col-md-12">
-            <label class="form-label">Stock Material (lab inventory)</label>
-            <select class="form-select" id="stock-material-select" name="stock_material_id">
-              <option value="">(none)</option>
-            </select>
-            <div class="form-text">Select a lab stock material for this sample. For child samples this is inherited from the root and cannot be changed.</div>
-          </div>
-          <div class="col-md-12">
-            <label class="form-label">Sample Name</label>
-            <input class="form-control" name="name" required placeholder="e.g., SS316H Heat A">
-          </div>
-        </div>
 
-        <!-- Dynamic project-defined attributes -->
-        <!-- Dynamic sample-class attributes -->
-        <div class="mt-3" id="sc-attrs" style="display:none;">
-          <h6 class="mb-2">Sample Class Attributes</h6>
-          <div id="sc-attrs-fields"></div>
-          <div class="form-text">These fields come from the selected Sample Class (lab-level).</div>
-        </div>
-
-        <div class="mt-3" id="dyn-attrs" style="display:none;">
-          <h6 class="mb-2">Project-required Attributes</h6>
-          <div id="dyn-attrs-fields"></div>
-          <div class="form-text">These fields are defined by the project owner.</div>
-        </div>
-
-        <!-- Optional: link to an experiment on create -->
-        <div class="row g-2 mt-3">
-          <div class="col-md-8">
-            <label class="form-label">Link Experiment (optional)</label>
-            <select class="form-select" id="experiment-select" name="experiment_id" disabled>
-              <option value="">Select a project first…</option>
-            </select>
+          <div class="mt-3" id="sc-attrs" style="display:none;">
+            <h6 class="mb-2">Sample Class Attributes</h6>
+            <div id="sc-attrs-fields"></div>
+            <div class="form-text">These fields come from the selected stock material’s Sample Class.</div>
           </div>
-          <div class="col-md-4">
-            <label class="form-label">Notes (optional)</label>
-            <input class="form-control" name="notes" placeholder="notes">
+
+          <div class="mt-3" id="dyn-attrs" style="display:none;">
+            <h6 class="mb-2">Project-required Attributes</h6>
+            <div id="dyn-attrs-fields"></div>
+            <div class="form-text">These fields are defined by the project owner.</div>
+          </div>
+
+          <div class="row g-2 mt-3">
+            <div class="col-md-8">
+              <label class="form-label">Link Experiment (optional)</label>
+              <select class="form-select" id="experiment-select" name="experiment_id" disabled>
+                <option value="">Select a project first…</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Notes (optional)</label>
+              <input class="form-control" name="notes" placeholder="notes">
+            </div>
           </div>
         </div>
-
-        <div class="mt-3">
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
           <button class="btn btn-primary" id="create-btn" disabled>Create Sample</button>
         </div>
       </form>
@@ -172,7 +249,7 @@
 <div class="modal fade" id="sampleClassModal" tabindex="-1" aria-labelledby="sampleClassModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-lg">
     <div class="modal-content">
-      <form method="post" action="{{ url_for('create_sample_class') }}">
+      <form method="post" action="{{ url_for('create_sample_class_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">
         <div class="modal-header">
           <h5 class="modal-title" id="sampleClassModalLabel">Create Sample Class</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -206,6 +283,45 @@
     </div>
   </div>
 </div>
+
+<!-- Sample Class edit modal -->
+<div class="modal fade" id="sampleClassEditModal" tabindex="-1" aria-labelledby="sampleClassEditModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" id="sampleClassEditForm">
+        <div class="modal-header">
+          <h5 class="modal-title" id="sampleClassEditModalLabel">Edit Sample Class</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input class="form-control" id="sc-edit-name" name="name" required>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Slug (optional)</label>
+            <input class="form-control" id="sc-edit-slug" name="slug" placeholder="leave blank to auto-generate">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Description (optional)</label>
+            <textarea class="form-control" id="sc-edit-desc" name="description" rows="2"></textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Attributes</label>
+            <div id="sc-edit-attrs-builder" class="mb-2"></div>
+            <button type="button" id="add-sc-edit-attr" class="btn btn-sm btn-outline-primary mb-2">+ Add attribute</button>
+            <input type="hidden" name="attributes" id="sc-edit-attributes-input">
+            <div class="form-text">Update attributes with name, type, required flag and optional choices for select fields.</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 <script id="sample-data" type="application/json">{{ sample_opts | tojson }}</script>
 <script id="exp-data" type="application/json">{{ experiment_opts | tojson }}</script>
 <script id="sample-class-data" type="application/json">{{ sample_class_opts | tojson }}</script>
@@ -213,12 +329,26 @@
 
 <script>
 (function(){
+  const labSlug  = "{{ current_lab.slug or current_lab.id }}";
+  const apiBase  = labSlug ? `/lab/${labSlug}` : '';
   const projSel   = document.getElementById('project-select');
   const parentSel = document.getElementById('parent-select');
   const expSel    = document.getElementById('experiment-select');
   const wrap      = document.getElementById('dyn-attrs');
   const fieldsBox = document.getElementById('dyn-attrs-fields');
   const createBtn = document.getElementById('create-btn');
+  const stockWrap = document.getElementById('stock-material-wrap');
+  const fromStockYes = document.getElementById('from-stock-yes');
+  const fromStockNo = document.getElementById('from-stock-no');
+  const stockQtyWrap = document.getElementById('stock-qty-wrap');
+  const stockQtyInput = document.getElementById('stock-new-qty');
+  const stockQtyUnit = document.getElementById('stock-new-qty-unit');
+  const stockOldQtyWrap = document.getElementById('stock-old-qty-wrap');
+  const stockOldQtyInput = document.getElementById('stock-old-qty');
+  const stockOldQtyUnit = document.getElementById('stock-old-qty-unit');
+  const sampleQtyWrap = document.getElementById('sample-qty-wrap');
+  const sampleQtyInput = document.getElementById('sample-qty');
+  const sampleQtyUnit = document.getElementById('sample-qty-unit');
 
   let sampleData = [];
   let expData = [];
@@ -270,34 +400,37 @@
   }
 
   function clearDyn(){ fieldsBox.innerHTML = ''; }
-  function toggleCreate(ok){ createBtn.disabled = !ok; }
 
-  // sample-class helpers
-  const scSel = document.getElementById('sample-class-select');
+  // sample-class helpers (inherited from stock material)
   const scWrap = document.getElementById('sc-attrs');
   const scFields = document.getElementById('sc-attrs-fields');
 
   function slugify(name){ return (name||'').toString().toLowerCase().replace(/[^0-9a-z]+/g,'_'); }
 
-  function populateSampleClasses(){
-    scSel.innerHTML = '';
-    const ph = document.createElement('option'); ph.value=''; ph.textContent='(none)'; scSel.appendChild(ph);
-    scData.forEach(sc => {
-      const opt = document.createElement('option'); opt.value = sc.id; opt.textContent = sc.name; scSel.appendChild(opt);
-    });
-  }
-
   // Stock material populate
   const stockSel = document.getElementById('stock-material-select');
+  const stockClassLabel = document.getElementById('stock-class-label');
   const stockDataEl = document.getElementById('stock-material-data');
   let stockData = [];
   try { stockData = JSON.parse(stockDataEl.textContent || '[]'); } catch(_) {}
   function populateStockMaterials(){
     stockSel.innerHTML = '';
-    const ph = document.createElement('option'); ph.value=''; ph.textContent='(none)'; stockSel.appendChild(ph);
+    const ph = document.createElement('option'); ph.value=''; ph.textContent='Select a stock material…'; stockSel.appendChild(ph);
     stockData.forEach(sm => {
       const opt = document.createElement('option'); opt.value = sm.id; opt.textContent = sm.name + (sm.lot_number?(' — ' + sm.lot_number):''); stockSel.appendChild(opt);
     });
+  }
+
+  function canCreate(){
+    const hasProject = !!projSel.value;
+    const hasParent = !!parentSel.value;
+    const wantsStock = fromStockYes && fromStockYes.checked;
+    const hasStock = !!stockSel.value;
+    return hasProject && (hasParent || !wantsStock || hasStock);
+  }
+
+  function toggleCreate(){
+    createBtn.disabled = !canCreate();
   }
 
   function renderScAttrs(sc){
@@ -325,17 +458,72 @@
     });
   }
 
+  function updateStockClassAttrs(){
+    const pid = projSel.value ? Number(projSel.value) : null;
+    const stockId = Number(stockSel.value || 0);
+    const stock = stockData.find(s => s.id === stockId);
+    const classId = stock ? stock.sample_class_id : null;
+    if (stockClassLabel){
+      stockClassLabel.textContent = classId && stock && stock.sample_class_name ? `Sample Class: ${stock.sample_class_name}` : '';
+    }
+    if (stockOldQtyInput){
+      stockOldQtyInput.value = (stock && stock.quantity !== null && stock.quantity !== undefined) ? stock.quantity : '';
+    }
+    if (stockOldQtyUnit) stockOldQtyUnit.textContent = stock && stock.unit ? stock.unit : '';
+    if (stockQtyUnit) stockQtyUnit.textContent = stock && stock.unit ? stock.unit : '';
+    if (sampleQtyUnit) sampleQtyUnit.textContent = stock && stock.unit ? stock.unit : '';
+    if (pid && classId){
+      fetch(`${apiBase}/api/project/${pid}/sample-class/${classId}/attrs`).then(r=>r.json()).then(attrs=>{
+        const fake = { attributes: attrs };
+        renderScAttrs(fake);
+      }).catch(()=>{
+        renderScAttrs(null);
+      });
+    } else {
+      renderScAttrs(null);
+    }
+  }
+
+  function syncStockOrigin(){
+    const wantsStock = fromStockYes && fromStockYes.checked;
+    if (stockWrap) stockWrap.style.display = wantsStock ? '' : 'none';
+    if (sampleQtyWrap) sampleQtyWrap.style.display = wantsStock ? '' : 'none';
+    if (stockOldQtyWrap) stockOldQtyWrap.style.display = wantsStock ? '' : 'none';
+    if (stockQtyWrap) stockQtyWrap.style.display = wantsStock ? '' : 'none';
+    if (stockSel){
+      stockSel.required = wantsStock;
+      if (!wantsStock) stockSel.value = '';
+    }
+    if (stockQtyInput){
+      stockQtyInput.required = wantsStock;
+      if (!wantsStock) stockQtyInput.value = '';
+    }
+    if (sampleQtyInput){
+      sampleQtyInput.required = wantsStock;
+      if (!wantsStock) sampleQtyInput.value = '';
+    }
+    if (!wantsStock){
+      if (stockClassLabel) stockClassLabel.textContent = '';
+      if (stockOldQtyInput) stockOldQtyInput.value = '';
+      if (stockOldQtyUnit) stockOldQtyUnit.textContent = '';
+      if (stockQtyUnit) stockQtyUnit.textContent = '';
+      if (sampleQtyUnit) sampleQtyUnit.textContent = '';
+      renderScAttrs(null);
+    }
+    toggleCreate();
+  }
+
 
   async function loadAttrs(pid){
     clearDyn();
-    if (!pid) { wrap.style.display = 'none'; toggleCreate(false); return; }
+    if (!pid) { wrap.style.display = 'none'; toggleCreate(); return; }
     try {
-      const resp = await fetch(`/api/project/${pid}/sample-attrs`);
+      const resp = await fetch(`${apiBase}/api/project/${pid}/sample-attrs`);
       const attrs = await resp.json();
 
       if (!attrs.length) {
         wrap.style.display = 'none';
-        toggleCreate(true);
+        toggleCreate();
         return;
       }
 
@@ -370,6 +558,12 @@
           input.name = id; input.id = id;
           input.type = (a.field_type === 'number' ? 'number'
                     :  a.field_type === 'date'   ? 'date' : 'text');
+          if (a.field_type === 'number') {
+            input.step = 'any';
+            input.max = '1000000000';
+          } else if (a.field_type !== 'date') {
+            input.maxLength = 200;
+          }
           if (!a.required) input.placeholder = '(optional)';
         }
         if (a.required) input.required = true;
@@ -384,11 +578,11 @@
         fieldsBox.appendChild(group);
       });
 
-      toggleCreate(true); // browser 'required' validation enforces at submit
+      toggleCreate(); // browser 'required' validation enforces at submit
     } catch (e) {
       console.error('Failed to load project sample attributes', e);
       wrap.style.display = 'none';
-      toggleCreate(false);
+      toggleCreate();
     }
   }
 
@@ -399,6 +593,8 @@
     loadAttrs(pid);
     // when project changes, reset stock selection
     populateStockMaterials();
+    updateStockClassAttrs();
+    toggleCreate();
   });
 
   parentSel.addEventListener('change', function(){
@@ -415,7 +611,9 @@
       }
       // disable stock selection for child samples
       stockSel.disabled = true;
-      fetch(`/api/sample/${parentId}/attr-values`).then(r=>r.json()).then(map=>{
+      updateStockClassAttrs();
+      toggleCreate();
+      fetch(`${apiBase}/api/sample/${parentId}/attr-values`).then(r=>r.json()).then(map=>{
         // for each dynamic project attr input, if attribute marked inherited, set and disable
         const groups = document.querySelectorAll('#dyn-attrs-fields .mb-2');
         groups.forEach(g=>{
@@ -446,27 +644,21 @@
       });
       // re-enable stock selection for root sample creation
       stockSel.disabled = false;
+      updateStockClassAttrs();
+      toggleCreate();
     }
   });
 
-  // sample-class select handling
-  populateSampleClasses();
-  scSel.addEventListener('change', function(){
-    const id = Number(this.value);
-    const sc = scData.find(x=>x.id===id);
-    const pid = projSel.value ? Number(projSel.value) : null;
-    if (pid && id) {
-      fetch(`/api/project/${pid}/sample-class/${id}/attrs`).then(r=>r.json()).then(attrs=>{
-        // convert to same shape as sc.attributes
-        const fake = { attributes: attrs };
-        renderScAttrs(fake);
-      }).catch(()=>{
-        renderScAttrs(sc);
-      });
-    } else {
-      renderScAttrs(sc);
-    }
+  stockSel.addEventListener('change', function(){
+    updateStockClassAttrs();
+    toggleCreate();
   });
+
+  if (fromStockYes && fromStockNo){
+    fromStockYes.addEventListener('change', syncStockOrigin);
+    fromStockNo.addEventListener('change', syncStockOrigin);
+    syncStockOrigin();
+  }
 
   // Attribute builder for Sample Class modal
   const builder = document.getElementById('sc-attrs-builder');
@@ -567,10 +759,12 @@
       // clear builder
       builder.innerHTML = '';
       const scsel = document.getElementById('sample-class-select');
-      const id = Number(scsel.value);
-      const sc = scData.find(x=>x.id===id);
-      if (sc && sc.attributes && sc.attributes.length){
-        sc.attributes.forEach(a => builder.appendChild(makeAttrRow(a)));
+      if (scsel) {
+        const id = Number(scsel.value);
+        const sc = scData.find(x=>x.id===id);
+        if (sc && sc.attributes && sc.attributes.length){
+          sc.attributes.forEach(a => builder.appendChild(makeAttrRow(a)));
+        }
       }
     });
   })();
@@ -579,14 +773,75 @@
   const scForm = document.querySelector('#sampleClassModal form');
   if (scForm){ scForm.addEventListener('submit', function(){ serializeAttrs(); }); }
 
+  // Edit Sample Class modal
+  const editModal = document.getElementById('sampleClassEditModal');
+  const editForm = document.getElementById('sampleClassEditForm');
+  const editName = document.getElementById('sc-edit-name');
+  const editSlug = document.getElementById('sc-edit-slug');
+  const editDesc = document.getElementById('sc-edit-desc');
+  const editBuilder = document.getElementById('sc-edit-attrs-builder');
+  const editAddBtn = document.getElementById('add-sc-edit-attr');
+  const editHidden = document.getElementById('sc-edit-attributes-input');
+
+  function serializeEditAttrs(){
+    const rows = editBuilder.querySelectorAll('.sc-attr-row');
+    const out = [];
+    rows.forEach(r => {
+      const name = (r.querySelector('.sc-attr-name').value || '').trim();
+      if (!name) return;
+      const field_type = r.querySelector('.sc-attr-type').value;
+      const unit = (r.querySelector('.sc-attr-unit').value || '').trim() || null;
+      const rawChoices = (r.querySelector('.sc-attr-choices').value || '').trim();
+      const choices = rawChoices ? rawChoices.split(',').map(s=>s.trim()).filter(Boolean) : null;
+      const required = r.querySelector('.sc-attr-required').checked;
+      const inherited = !!r.querySelector('.sc-attr-inherit') && r.querySelector('.sc-attr-inherit').checked;
+      const obj = { name, field_type, required, inherited };
+      if (unit) obj.unit = unit;
+      if (choices) obj.choices = choices;
+      out.push(obj);
+    });
+    editHidden.value = JSON.stringify(out);
+    return out;
+  }
+
+  if (editAddBtn){
+    editAddBtn.addEventListener('click', function(){ editBuilder.appendChild(makeAttrRow()); });
+  }
+
+  if (editModal){
+    editModal.addEventListener('show.bs.modal', function(e){
+      const trigger = e.relatedTarget;
+      const raw = trigger && trigger.getAttribute ? trigger.getAttribute('data-sc') : null;
+      editBuilder.innerHTML = '';
+      editName.value = '';
+      editSlug.value = '';
+      editDesc.value = '';
+      if (!raw) return;
+      try{
+        const sc = JSON.parse(raw);
+        editName.value = sc.name || '';
+        editSlug.value = sc.slug || '';
+        editDesc.value = sc.description || '';
+        if (sc.attributes && sc.attributes.length){
+          sc.attributes.forEach(a => editBuilder.appendChild(makeAttrRow(a)));
+        }
+        editForm.action = `${apiBase}/sample-classes/${sc.id}/update`;
+      }catch(err){ console.error('sc edit parse', err); }
+    });
+  }
+
+  if (editForm){ editForm.addEventListener('submit', function(){ serializeEditAttrs(); }); }
+
   // Prefill if project already selected (rare on reload)
   if (projSel.value) {
     populateParents(projSel.value);
     populateExperiments(projSel.value);
     loadAttrs(projSel.value);
     populateStockMaterials();
+    updateStockClassAttrs();
+    toggleCreate();
   } else {
-    toggleCreate(false);
+    toggleCreate();
   }
 })();
 </script>

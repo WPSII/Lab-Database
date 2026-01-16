@@ -3,7 +3,12 @@
 
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h2>All Projects</h2>
-  <a href="{{ url_for('index') }}" class="btn btn-outline-secondary">Back</a>
+  <div class="d-flex gap-2">
+    {% if lab_role and lab_role != 'viewer' %}
+      <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#createProjectModal">New Project</button>
+    {% endif %}
+    <a href="{{ lab_link(current_lab) if current_lab is defined and current_lab else url_for('index') }}" class="btn btn-outline-secondary">Back</a>
+  </div>
 </div>
 
 <div class="row">
@@ -15,10 +20,14 @@
           {% for p in current %}
             <li class="list-group-item d-flex justify-content-between align-items-start">
               <div>
-                <a href="{{ url_for('view_project', project_id=p.id) }}" class="fw-semibold">{{ p.title }}</a>
+                <a href="{{ url_for('view_project', lab_slug=(current_lab.slug or current_lab.id), project_id=p.id) }}" class="fw-semibold">{{ p.title }}</a>
                 <div class="small text-muted">Start: {{ p.start_date.strftime('%Y-%m-%d') if p.start_date else '—' }}</div>
               </div>
-              <span class="badge text-bg-info">PI: {{ p.pi.name if p.pi else 'Unassigned' }}</span>
+              <span class="badge text-bg-info">PI: {% if p.pi %}
+                {% set pi_role = role_for_user(p.pi.id) %}
+                <a class="link-dark" href="{{ url_for('view_profile', user_id=p.pi.id) }}">{{ p.pi.name }}</a>
+                {% if pi_role %}<span class="badge {{ pi_role|role_badge }} ms-1 text-uppercase">{{ pi_role|role_label }}</span>{% endif %}
+              {% else %}Unassigned{% endif %}</span>
             </li>
           {% endfor %}
         </ul>
@@ -36,10 +45,14 @@
           {% for p in archive %}
             <li class="list-group-item d-flex justify-content-between align-items-start">
               <div>
-                <a href="{{ url_for('view_project', project_id=p.id) }}" class="fw-semibold">{{ p.title }}</a>
+                <a href="{{ url_for('view_project', lab_slug=(current_lab.slug or current_lab.id), project_id=p.id) }}" class="fw-semibold">{{ p.title }}</a>
                 <div class="small text-muted">Ended: {{ p.end_date.strftime('%Y-%m-%d') if p.end_date else '—' }}</div>
               </div>
-              <span class="badge text-bg-info">PI: {{ p.pi.name if p.pi else 'Unassigned' }}</span>
+              <span class="badge text-bg-info">PI: {% if p.pi %}
+                {% set pi_role = role_for_user(p.pi.id) %}
+                <a class="link-dark" href="{{ url_for('view_profile', user_id=p.pi.id) }}">{{ p.pi.name }}</a>
+                {% if pi_role %}<span class="badge {{ pi_role|role_badge }} ms-1 text-uppercase">{{ pi_role|role_label }}</span>{% endif %}
+              {% else %}Unassigned{% endif %}</span>
             </li>
           {% endfor %}
         </ul>
@@ -48,6 +61,39 @@
       {% endif %}
     </div>
   </div>
+<div class="modal fade" id="createProjectModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('create_project') }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Create Project</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Project Name</label>
+            <input class="form-control" name="title" required placeholder="e.g., Alloy Aging Study">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Primary Investigator</label>
+            <select class="form-select" name="pi_user_id">
+              <option value="">(unassigned)</option>
+              {% for u in lab_members %}
+                <option value="{{ u.id }}">{{ u.name or u.email }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Description (optional)</label>
+            <textarea class="form-control" name="description" rows="3" placeholder="Summary, goals, or notes"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-primary">Create Project</button>
+        </div>
+      </form>
+    </div>
+  </div>
 </div>
-
 {% endblock %}

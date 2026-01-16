@@ -2,7 +2,10 @@ import os
 import io
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+import qrcode
+import pycountry
 
 from flask import (
     Flask, abort, request, redirect, url_for, render_template,
@@ -15,9 +18,8 @@ from flask_login import (
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
-import qrcode
-from sqlalchemy import text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy import text, create_engine
+from sqlalchemy.exc import OperationalError, IntegrityError
 import sqlite3
 from helpers import (
     safe_json_loads,
@@ -37,6 +39,8 @@ def _uid():
 # --- Config ---
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+LABS_DIR = os.path.join(BASE_DIR, 'Labs')
+os.makedirs(LABS_DIR, exist_ok=True)
 ALLOWED_EXTENSIONS = {"pdf", "doc", "docx", "txt", "csv", "png", "jpg", "jpeg"}
 
 app = Flask(__name__)
@@ -51,7 +55,7 @@ def load_user(user_id: str):
 
 app.config["SECRET_KEY"] = "change-me"
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + \
-    os.path.join(BASE_DIR, "lab.db")
+    os.path.join(BASE_DIR, "backend.db")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["MAX_CONTENT_LENGTH"] = 256 * 1024 * 1024  # 256 MB
@@ -141,16 +145,92 @@ def ensure_runtime_columns_once():
                     return False
 
             if db_path:
+                _add_if_missing_sqlite(db_path, 'project', 'slug', 'VARCHAR(160)')
                 _add_if_missing_sqlite(db_path, 'project', 'start_date', 'DATE')
                 _add_if_missing_sqlite(db_path, 'project', 'end_date', 'DATE')
                 _add_if_missing_sqlite(db_path, 'equipment', 'project_id', 'INTEGER')
+                _add_if_missing_sqlite(db_path, 'equipment', 'database_id', 'INTEGER')
                 _add_if_missing_sqlite(db_path, 'stock_material', 'sample_class_id', 'INTEGER')
+                _add_if_missing_sqlite(db_path, 'stock_material', 'database_id', 'INTEGER')
+                _add_if_missing_sqlite(db_path, 'stock_material', 'class_attrs_json', 'TEXT')
+                _add_if_missing_sqlite(db_path, 'stock_material', 'original_quantity', 'FLOAT')
+                _add_if_missing_sqlite(db_path, 'sample_class', 'database_id', 'INTEGER')
+                _add_if_missing_sqlite(db_path, 'database', 'slug', 'VARCHAR(160)')
+                _add_if_missing_sqlite(db_path, 'database', 'db_filename', 'VARCHAR(300)')
+                _add_if_missing_sqlite(db_path, 'database', 'time_zone', 'VARCHAR(64)')
+                _add_if_missing_sqlite(db_path, 'database', 'role_badge_owner', 'VARCHAR(32)')
+                _add_if_missing_sqlite(db_path, 'database', 'role_badge_admin', 'VARCHAR(32)')
+                _add_if_missing_sqlite(db_path, 'database', 'role_badge_editor', 'VARCHAR(32)')
+                _add_if_missing_sqlite(db_path, 'database', 'role_badge_viewer', 'VARCHAR(32)')
+                _add_if_missing_sqlite(db_path, 'facility', 'manager_user_id', 'INTEGER')
+                _add_if_missing_sqlite(db_path, 'facility', 'slug', 'VARCHAR(160)')
+                _add_if_missing_sqlite(db_path, 'facility', 'address_line1', 'VARCHAR(200)')
+                _add_if_missing_sqlite(db_path, 'facility', 'address_line2', 'VARCHAR(200)')
+                _add_if_missing_sqlite(db_path, 'facility', 'city', 'VARCHAR(120)')
+                _add_if_missing_sqlite(db_path, 'facility', 'state', 'VARCHAR(120)')
+                _add_if_missing_sqlite(db_path, 'facility', 'postal_code', 'VARCHAR(40)')
+                _add_if_missing_sqlite(db_path, 'facility', 'country', 'VARCHAR(120)')
+                _add_if_missing_sqlite(db_path, 'user', 'title', 'VARCHAR(120)')
+                _add_if_missing_sqlite(db_path, 'user', 'phone', 'VARCHAR(64)')
+                _add_if_missing_sqlite(db_path, 'user', 'organization', 'VARCHAR(160)')
+                _add_if_missing_sqlite(db_path, 'user', 'bio', 'TEXT')
+                # Ensure new tables exist (in particular the invitation table)
+                try:
+                    # create any missing tables for models declared in SQLAlchemy
+                    db.create_all()
+                except Exception:
+                    try:
+                        app.logger.exception('Failed to create missing tables via create_all')
+                    except Exception:
+                        pass
+            try:
+                db.session.execute(text("UPDATE database SET role_badge_owner = 'bg-hot-pink' WHERE role_badge_owner IS NULL OR role_badge_owner = 'bg-danger'"))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
             else:
                 # fallback to SQLAlchemy helper
+                add_column_if_missing('project', 'slug', 'VARCHAR(160)')
                 add_column_if_missing('project', 'start_date', 'DATE')
                 add_column_if_missing('project', 'end_date', 'DATE')
                 add_column_if_missing('equipment', 'project_id', 'INTEGER')
+                add_column_if_missing('equipment', 'database_id', 'INTEGER')
                 add_column_if_missing('stock_material', 'sample_class_id', 'INTEGER')
+                add_column_if_missing('stock_material', 'database_id', 'INTEGER')
+                add_column_if_missing('stock_material', 'class_attrs_json', 'TEXT')
+                add_column_if_missing('stock_material', 'original_quantity', 'FLOAT')
+                add_column_if_missing('sample_class', 'database_id', 'INTEGER')
+                add_column_if_missing('database', 'slug', 'VARCHAR(160)')
+                add_column_if_missing('database', 'db_filename', 'VARCHAR(300)')
+                add_column_if_missing('database', 'time_zone', 'VARCHAR(64)')
+                add_column_if_missing('database', 'role_badge_owner', 'VARCHAR(32)')
+                add_column_if_missing('database', 'role_badge_admin', 'VARCHAR(32)')
+                add_column_if_missing('database', 'role_badge_editor', 'VARCHAR(32)')
+                add_column_if_missing('database', 'role_badge_viewer', 'VARCHAR(32)')
+                add_column_if_missing('facility', 'manager_user_id', 'INTEGER')
+                add_column_if_missing('facility', 'slug', 'VARCHAR(160)')
+                add_column_if_missing('facility', 'address_line1', 'VARCHAR(200)')
+                add_column_if_missing('facility', 'address_line2', 'VARCHAR(200)')
+                add_column_if_missing('facility', 'city', 'VARCHAR(120)')
+                add_column_if_missing('facility', 'state', 'VARCHAR(120)')
+                add_column_if_missing('facility', 'postal_code', 'VARCHAR(40)')
+                add_column_if_missing('facility', 'country', 'VARCHAR(120)')
+                add_column_if_missing('user', 'title', 'VARCHAR(120)')
+                add_column_if_missing('user', 'phone', 'VARCHAR(64)')
+                add_column_if_missing('user', 'organization', 'VARCHAR(160)')
+                add_column_if_missing('user', 'bio', 'TEXT')
+                try:
+                    db.create_all()
+                except Exception:
+                    try:
+                        app.logger.exception('Failed to create missing tables via create_all')
+                    except Exception:
+                        pass
+                try:
+                    db.session.execute(text("UPDATE database SET role_badge_owner = 'bg-hot-pink' WHERE role_badge_owner IS NULL OR role_badge_owner = 'bg-danger'"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
     except Exception:
         try:
             app.logger.exception('Failed to ensure runtime columns')
@@ -168,9 +248,6 @@ LOGIN_EXEMPT = {
     "auth_login",        # GET/POST login page
     "auth_register",     # GET/POST signup page
     "static",       # bootstrap/css/js
-    "view_sample_public",   # new public view
-    "view_sample_public_short",  # <-- add this
-    "sample_qr",            # QR image itself
 }
 
 
@@ -193,6 +270,36 @@ def require_login_for_all_pages():
     # Otherwise, bounce to login with ?next=
     return redirect(url_for("auth_login", next=request.url))
 
+
+@app.errorhandler(403)
+def handle_forbidden(_err):
+    flash("You cannot access that page.", "error")
+    return redirect(url_for("index"))
+
+
+@app.route('/profile', methods=['GET', 'POST'])
+@login_required
+def edit_profile():
+    user = current_user
+    if request.method == 'POST':
+        user.name = (request.form.get('name') or '').strip()
+        user.title = (request.form.get('title') or '').strip()
+        user.phone = (request.form.get('phone') or '').strip()
+        user.organization = (request.form.get('organization') or '').strip()
+        user.bio = (request.form.get('bio') or '').strip()
+        db.session.commit()
+        flash('Profile updated.', 'ok')
+        return redirect(url_for('edit_profile'))
+    return render_template('profile.html', user=user)
+
+
+@app.get('/profile/<int:user_id>')
+@login_required
+def view_profile(user_id):
+    user = User.query.get_or_404(user_id)
+    is_owner = bool(current_user.is_authenticated and current_user.id == user.id)
+    return render_template('profile_view.html', user=user, is_owner=is_owner)
+
 # --- Models ---
 # --- Visibility constants ---
 VIS_INHERIT = "inherit"   # use database default
@@ -209,10 +316,41 @@ class Database(db.Model):
     owner_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     default_visibility = db.Column(db.String(16), default=VIS_PRIVATE)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    time_zone = db.Column(db.String(64), default='UTC')
+    role_badge_owner = db.Column(db.String(32), default='bg-hot-pink')
+    role_badge_admin = db.Column(db.String(32), default='bg-primary')
+    role_badge_editor = db.Column(db.String(32), default='bg-success')
+    role_badge_viewer = db.Column(db.String(32), default='bg-secondary')
+
+    # optional URL slug for nicer lab URLs
+    slug = db.Column(db.String(160), nullable=True, unique=True)
+    # optional per-lab database filename (relative to BASE_DIR)
+    db_filename = db.Column(db.String(300), nullable=True, unique=True)
 
     owner = db.relationship("User")
     projects = db.relationship(
         "Project", backref="database", cascade="all, delete-orphan")
+
+    @property
+    def member_ids(self):
+        """Return a list of user ids who are members of this lab.
+
+        This is computed from DatabaseMember rows. The owner is expected
+        to be included (the lab creation flow creates a DatabaseMember for
+        the owner), but this property is authoritative regardless.
+        """
+        try:
+            return [m.user_id for m in self.members]
+        except Exception:
+            return []
+
+    @property
+    def admin_ids(self):
+        """Return a list of user ids who are admins (owner or admin role)."""
+        try:
+            return [m.user_id for m in self.members if m.role in ("owner", "admin")]
+        except Exception:
+            return []
 
 
 class DatabaseMember(db.Model):
@@ -235,6 +373,10 @@ class User(db.Model, UserMixin):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False)
     name = db.Column(db.String(120))
+    title = db.Column(db.String(120))
+    phone = db.Column(db.String(64))
+    organization = db.Column(db.String(160))
+    bio = db.Column(db.Text)
     password_hash = db.Column(db.String(255), nullable=False)
     is_admin = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
@@ -251,6 +393,7 @@ class Project(db.Model):
     title = db.Column(db.String(160), nullable=False)
     description = db.Column(db.Text, default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    slug = db.Column(db.String(160), nullable=True)
     # optional start/end dates for project lifecycle
     start_date = db.Column(db.Date, nullable=True)
     end_date = db.Column(db.Date, nullable=True)
@@ -450,6 +593,9 @@ class SampleClass(db.Model):
     description = db.Column(db.Text)
     attributes_json = db.Column(db.Text)  # JSON string describing class attributes/defaults
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # lab scoping
+    database_id = db.Column(db.Integer, db.ForeignKey('database.id'), nullable=True)
+    database = db.relationship('Database')
 
 
 class ProjectSampleClass(db.Model):
@@ -498,6 +644,9 @@ class Equipment(db.Model):
     # optional project scoping for equipment (nullable)
     project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=True)
     project = db.relationship('Project', foreign_keys=[project_id])
+    # optional lab scoping (nullable for legacy)
+    database_id = db.Column(db.Integer, db.ForeignKey('database.id'), nullable=True)
+    database = db.relationship('Database')
 
     def last_calibration(self):
         return CalibrationLog.query.filter_by(equipment_id=self.id).order_by(CalibrationLog.performed_at.desc()).first()
@@ -519,6 +668,26 @@ class Equipment(db.Model):
         if nd - now <= timedelta(days=warn_days):
             return 'due_soon'
         return 'ok'
+
+
+class Facility(db.Model):
+    __tablename__ = 'facility'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    slug = db.Column(db.String(160), nullable=True)
+    location = db.Column(db.String(200))
+    address_line1 = db.Column(db.String(200))
+    address_line2 = db.Column(db.String(200))
+    city = db.Column(db.String(120))
+    state = db.Column(db.String(120))
+    postal_code = db.Column(db.String(40))
+    country = db.Column(db.String(120))
+    description = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    manager_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    manager = db.relationship('User', foreign_keys=[manager_user_id])
+    database_id = db.Column(db.Integer, db.ForeignKey('database.id'), nullable=True)
+    database = db.relationship('Database')
 
 
 class MaintenanceLog(db.Model):
@@ -584,6 +753,7 @@ class StockMaterial(db.Model):
     description = db.Column(db.Text)
     lot_number = db.Column(db.String(120))
     quantity = db.Column(db.Float)
+    original_quantity = db.Column(db.Float)
     unit = db.Column(db.String(64))
     location = db.Column(db.String(200))
     manufacturer = db.Column(db.String(200))
@@ -591,9 +761,39 @@ class StockMaterial(db.Model):
     # optional link to a SampleClass (categorize stock materials)
     sample_class_id = db.Column(db.Integer, db.ForeignKey('sample_class.id'), nullable=True)
     sample_class = db.relationship('SampleClass', foreign_keys=[sample_class_id])
+    # optional class attributes payload (JSON)
+    class_attrs_json = db.Column(db.Text)
+    # lab scoping
+    database_id = db.Column(db.Integer, db.ForeignKey('database.id'), nullable=True)
+    database = db.relationship('Database')
+    documents = db.relationship('StockMaterialDocument', backref='stock_material', cascade='all, delete-orphan')
+    quantity_logs = db.relationship('StockMaterialQuantityLog', backref='stock_material', cascade='all, delete-orphan')
 
     def __repr__(self):
         return f"<StockMaterial {self.id} {self.name}>"
+
+
+class StockMaterialDocument(db.Model):
+    __tablename__ = 'stock_material_document'
+    id = db.Column(db.Integer, primary_key=True)
+    stock_material_id = db.Column(db.Integer, db.ForeignKey('stock_material.id'), nullable=False)
+    filename = db.Column(db.String(255), nullable=False)
+    stored_path = db.Column(db.String(500), nullable=False)
+    mimetype = db.Column(db.String(120))
+    uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+class StockMaterialQuantityLog(db.Model):
+    __tablename__ = 'stock_material_quantity_log'
+    id = db.Column(db.Integer, primary_key=True)
+    stock_material_id = db.Column(db.Integer, db.ForeignKey('stock_material.id'), nullable=False)
+    sample_id = db.Column(db.Integer, db.ForeignKey('sample.id'), nullable=True)
+    quantity_before = db.Column(db.Float, nullable=True)
+    quantity_after = db.Column(db.Float, nullable=True)
+    delta = db.Column(db.Float, nullable=True)
+    note = db.Column(db.String(255))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    sample = db.relationship('Sample', foreign_keys=[sample_id])
 
 
 class SOP(db.Model):
@@ -616,11 +816,50 @@ class ExperimentLog(db.Model):
     notes = db.Column(db.Text)
     attachments_json = db.Column(db.Text)
 
-    experiment = db.relationship('Experiment', backref=db.backref('logs', cascade='all, delete-orphan'))
+
+class Invitation(db.Model):
+    __tablename__ = 'invitation'
+    id = db.Column(db.Integer, primary_key=True)
+    database_id = db.Column(db.Integer, db.ForeignKey('database.id'), nullable=False)
+    inviter_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    invitee_email = db.Column(db.String(255), nullable=False)
+    role = db.Column(db.String(32), default='viewer')
+    token = db.Column(db.String(255))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    accepted_at = db.Column(db.DateTime, nullable=True)
+    accepted_by = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+
+    database = db.relationship('Database')
+    inviter = db.relationship('User', foreign_keys=[inviter_id])
+    accepter = db.relationship('User', foreign_keys=[accepted_by])
+
 
 
 
 # --- Helpers ---
+def set_current_lab(lab):
+    try:
+        if lab and (lab.slug or lab.id):
+            session['current_lab_slug'] = lab.slug or str(lab.id)
+    except Exception:
+        pass
+
+
+def get_lab_or_404(lab_slug: str):
+    if not lab_slug:
+        abort(404)
+    lab = Database.query.filter_by(slug=lab_slug).first()
+    if not lab and lab_slug.isdigit():
+        lab = Database.query.get(int(lab_slug))
+    if not lab:
+        abort(404)
+
+    # membership check: allow viewing if member or lab is public
+    current_membership = DatabaseMember.query.filter_by(database_id=lab.id, user_id=_uid()).first()
+    if not current_membership and lab.default_visibility == VIS_PRIVATE:
+        abort(403)
+    return lab
+
 def is_project_public(project):
     if project.visibility == VIS_PUBLIC:
         return True
@@ -635,6 +874,110 @@ def db_role(user, database_id):
     m = DatabaseMember.query.filter_by(
         database_id=database_id, user_id=user.id).first()
     return m.role if m else None
+
+
+def slugify_name(name: str) -> str:
+    s = (name or '').strip().lower()
+    s = re.sub(r"[^a-z0-9\-]+", '-', s)
+    s = re.sub(r"-+", '-', s).strip('-')
+    return s or None
+
+
+def generate_facility_slug(name: str, lab_id: int, exclude_id: int = None) -> str:
+    base = slugify_name(name)
+    if not base:
+        base = f"facility-{lab_id}-{int(datetime.utcnow().timestamp())}"
+    slug = base
+    i = 1
+    while True:
+        q = Facility.query.filter(
+            Facility.database_id == lab_id,
+            Facility.slug == slug
+        )
+        if exclude_id:
+            q = q.filter(Facility.id != exclude_id)
+        if not q.first():
+            break
+        slug = f"{base}-{i}"
+        i += 1
+    return slug
+
+
+def _lab_timezone():
+    slug = session.get('current_lab_slug')
+    lab = None
+    if slug:
+        lab = Database.query.filter_by(slug=slug).first()
+        if not lab and str(slug).isdigit():
+            lab = Database.query.get(int(slug))
+    tz_name = getattr(lab, 'time_zone', None) or 'UTC'
+    try:
+        return ZoneInfo(tz_name)
+    except Exception:
+        return timezone.utc
+
+
+def lab_dt(value, fmt='%m-%d-%Y %H:%M'):
+    if not value:
+        return ''
+    tz = _lab_timezone()
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(tz).strftime(fmt)
+
+
+def lab_date(value, fmt='%m-%d-%Y'):
+    return lab_dt(value, fmt)
+
+
+app.jinja_env.filters['lab_dt'] = lab_dt
+app.jinja_env.filters['lab_date'] = lab_date
+
+
+def role_badge_class(role: str) -> str:
+    role = (role or '').lower()
+    slug = session.get('current_lab_slug')
+    lab = None
+    if slug:
+        lab = Database.query.filter_by(slug=slug).first()
+        if not lab and str(slug).isdigit():
+            lab = Database.query.get(int(slug))
+    if role == 'owner':
+        return getattr(lab, 'role_badge_owner', None) or 'bg-hot-pink'
+    if role == 'admin':
+        return getattr(lab, 'role_badge_admin', None) or 'bg-primary'
+    if role == 'editor':
+        return getattr(lab, 'role_badge_editor', None) or 'bg-success'
+    return getattr(lab, 'role_badge_viewer', None) or 'bg-secondary'
+
+
+app.jinja_env.filters['role_badge'] = role_badge_class
+
+
+def role_label(role: str) -> str:
+    role = (role or '').lower()
+    if role == 'admin':
+        return 'manager'
+    return role
+
+
+app.jinja_env.filters['role_label'] = role_label
+
+
+def role_for_user(user_id: int):
+    slug = session.get('current_lab_slug')
+    if not slug or not user_id:
+        return None
+    lab = Database.query.filter_by(slug=slug).first()
+    if not lab and str(slug).isdigit():
+        lab = Database.query.get(int(slug))
+    if not lab:
+        return None
+    m = DatabaseMember.query.filter_by(database_id=lab.id, user_id=user_id).first()
+    return m.role if m else None
+
+
+app.jinja_env.globals['role_for_user'] = role_for_user
 
 
 def can_view_project(project, user):
@@ -653,13 +996,67 @@ def allowed_file(fn: str) -> bool:
 
 
 def exp_upload_dir(project_id: int, experiment_id: int) -> str:
-    d = os.path.join(UPLOAD_FOLDER, str(project_id), str(experiment_id))
+    # Nest experiment uploads under the lab folder: <UPLOAD_FOLDER>/<lab_key>/projects/<proj_key>/experiments/<experiment_id>
+    proj = Project.query.get(project_id)
+    if not proj:
+        # fallback to legacy path
+        d = os.path.join(UPLOAD_FOLDER, str(project_id), str(experiment_id))
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    dbobj = getattr(proj, 'database', None)
+    lab_key = None
+    if dbobj:
+        lab_key = dbobj.slug or f"lab-{dbobj.id}"
+    else:
+        lab_key = 'lab-unknown'
+
+    def _slug(s: str) -> str:
+        if not s:
+            return ''
+        s2 = re.sub(r"[^0-9a-zA-Z]+", '-', s).strip('-').lower()
+        return s2[:40]
+
+    proj_key = f"{proj.id}-{_slug(proj.title)}"
+    d = os.path.join(UPLOAD_FOLDER, lab_key, 'projects', proj_key, 'experiments', str(experiment_id))
     os.makedirs(d, exist_ok=True)
     return d
 
 
 def sample_upload_dir(sample_id: int) -> str:
-    d = os.path.join(UPLOAD_FOLDER, "samples", str(sample_id))
+    # Nest sample uploads under the lab folder: <UPLOAD_FOLDER>/<lab_key>/projects/<proj_key>/samples/<sample_id>
+    sample = Sample.query.get(sample_id)
+    if not sample:
+        d = os.path.join(UPLOAD_FOLDER, "samples", str(sample_id))
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    proj = getattr(sample, 'project', None)
+    dbobj = getattr(proj, 'database', None) if proj else None
+    lab_key = dbobj.slug or (f"lab-{dbobj.id}" if dbobj else 'lab-unknown')
+
+    def _slug(s: str) -> str:
+        if not s:
+            return ''
+        s2 = re.sub(r"[^0-9a-zA-Z]+", '-', s).strip('-').lower()
+        return s2[:40]
+
+    proj_key = f"{proj.id}-{_slug(proj.title)}" if proj else 'no-project'
+    d = os.path.join(UPLOAD_FOLDER, lab_key, 'projects', proj_key, 'samples', str(sample_id))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def stock_material_upload_dir(stock_id: int) -> str:
+    mat = StockMaterial.query.get(stock_id)
+    if not mat:
+        d = os.path.join(UPLOAD_FOLDER, "stock-materials", str(stock_id))
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    dbobj = getattr(mat, 'database', None)
+    lab_key = dbobj.slug or (f"lab-{dbobj.id}" if dbobj else 'lab-unknown')
+    d = os.path.join(UPLOAD_FOLDER, lab_key, 'stock-materials', str(stock_id))
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -750,6 +1147,97 @@ def build_linked_sample_tree(experiment):
         sort_tree(r)
     roots.sort(key=lambda n: (n["sample"].name or "").lower())
     return roots
+
+
+def _lab_db_path(lab: Database):
+    if not lab or not lab.db_filename:
+        return None
+    return os.path.join(BASE_DIR, lab.db_filename)
+
+
+def _ensure_lab_timeline_table(path: str):
+    if not path:
+        return
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lab_timeline (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            occurred_at TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id INTEGER,
+            title TEXT,
+            meta_json TEXT,
+            actor_id INTEGER
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def log_lab_event(lab: Database, event_type: str, entity_type: str, entity_id: int = None, title: str = None, meta: dict = None):
+    path = _lab_db_path(lab)
+    if not path:
+        return
+    _ensure_lab_timeline_table(path)
+    try:
+        conn = sqlite3.connect(path)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO lab_timeline (occurred_at, event_type, entity_type, entity_id, title, meta_json, actor_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.utcnow().isoformat(),
+                event_type,
+                entity_type,
+                entity_id,
+                title,
+                json.dumps(meta or {}),
+                _uid(),
+            )
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        try:
+            conn and conn.close()
+        except Exception:
+            pass
+
+
+def fetch_lab_events(lab: Database, event_types=None, entity_types=None):
+    path = _lab_db_path(lab)
+    if not path or not os.path.exists(path):
+        return []
+    _ensure_lab_timeline_table(path)
+    conn = sqlite3.connect(path)
+    cur = conn.cursor()
+    cur.execute("SELECT occurred_at, event_type, entity_type, entity_id, title, meta_json, actor_id FROM lab_timeline ORDER BY occurred_at DESC")
+    rows = cur.fetchall()
+    conn.close()
+
+    out = []
+    for r in rows:
+        ev = {
+            "occurred_at": r[0],
+            "event_type": r[1],
+            "entity_type": r[2],
+            "entity_id": r[3],
+            "title": r[4],
+            "meta": safe_json_loads(r[5], {}),
+            "actor_id": r[6],
+        }
+        if event_types and ev["event_type"] not in event_types:
+            continue
+        if entity_types and ev["entity_type"] not in entity_types:
+            continue
+        out.append(ev)
+    return out
 
 
 def serialize_sample_tree(node, current_id=None, linked_ids=None):
@@ -942,28 +1430,73 @@ def auth_logout():
 
 @app.route("/")
 def index():
-    try:
-        projects = Project.query.order_by(Project.created_at.desc()).all()
-    except OperationalError as e:
-        app.logger.warning('OperationalError querying Projects index, attempting runtime migration: %s', e)
+    # Show labs the current user is a member of and allow creating a new lab
+    labs = []
+    if current_user.is_authenticated:
         try:
-            ensure_runtime_columns_once()
+            labs = (Database.query
+                    .join(DatabaseMember, DatabaseMember.database_id == Database.id)
+                    .filter(DatabaseMember.user_id == current_user.id)
+                    .order_by(Database.name.asc())
+                    .all())
+        except OperationalError:
+            # attempt runtime migration and retry
+            try:
+                ensure_runtime_columns_once()
+            except Exception:
+                pass
+            labs = (Database.query
+                    .join(DatabaseMember, DatabaseMember.database_id == Database.id)
+                    .filter(DatabaseMember.user_id == current_user.id)
+                    .order_by(Database.name.asc())
+                    .all())
+
+        # incoming invitations addressed to this user's email
+        try:
+            incoming_invites = Invitation.query.filter_by(invitee_email=(current_user.email or '').lower(), accepted_at=None).all()
         except Exception:
-            pass
-        # retry once
-        projects = Project.query.order_by(Project.created_at.desc()).all()
-    # expects {{ projects }}
-    return render_template("index.html", projects=projects)
+            incoming_invites = []
+    else:
+        incoming_invites = []
+
+    return render_template('index.html', labs=labs, incoming_invites=incoming_invites)
 
 
 @app.route('/projects/all')
 def all_projects():
+    # Require lab context; redirect to lab-specific view
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('all_projects_for_lab', lab_slug=slug))
+    flash('Select a lab to view projects.', 'error')
+    return redirect(url_for('index'))
+
+
+@app.route('/lab/<lab_slug>/projects')
+def all_projects_for_lab(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    lab_role = db_role(current_user, lab.id)
+    try:
+        lab_members = (User.query
+                       .join(DatabaseMember, DatabaseMember.user_id == User.id)
+                       .filter(DatabaseMember.database_id == lab.id)
+                       .order_by(User.name.asc())
+                       .all())
+    except Exception:
+        lab_members = []
     try:
         today = datetime.utcnow().date()
         # Current projects: have a start_date and no end_date set
-        current = Project.query.filter(Project.start_date != None, Project.end_date == None).order_by(Project.start_date.asc()).all()
+        current = (Project.query
+                   .filter(Project.database_id == lab.id, Project.start_date != None, Project.end_date == None)
+                   .order_by(Project.start_date.asc())
+                   .all())
         # Archive: end_date set and before today
-        archive = Project.query.filter(Project.end_date != None, Project.end_date < today).order_by(Project.end_date.desc()).all()
+        archive = (Project.query
+                   .filter(Project.database_id == lab.id, Project.end_date != None, Project.end_date < today)
+                   .order_by(Project.end_date.desc())
+                   .all())
     except OperationalError as e:
         app.logger.warning('OperationalError querying Projects list, attempting runtime migration: %s', e)
         try:
@@ -973,10 +1506,16 @@ def all_projects():
             pass
         # retry
         today = datetime.utcnow().date()
-        current = Project.query.filter(Project.start_date != None, Project.end_date == None).order_by(Project.start_date.asc()).all()
-        archive = Project.query.filter(Project.end_date != None, Project.end_date < today).order_by(Project.end_date.desc()).all()
+        current = (Project.query
+                   .filter(Project.database_id == lab.id, Project.start_date != None, Project.end_date == None)
+                   .order_by(Project.start_date.asc())
+                   .all())
+        archive = (Project.query
+                   .filter(Project.database_id == lab.id, Project.end_date != None, Project.end_date < today)
+                   .order_by(Project.end_date.desc())
+                   .all())
 
-    return render_template('all_projects.html', current=current, archive=archive)
+    return render_template('all_projects.html', current=current, archive=archive, current_lab=lab, lab_role=lab_role, lab_members=lab_members)
 
 
 @app.before_request
@@ -990,10 +1529,6 @@ def require_login_for_all_pages():
 
     # Allow some endpoints without login
     if ep in LOGIN_EXEMPT:
-        return
-
-    # Allow document download if explicitly allowed
-    if ep == "download_sample_doc" and app.config.get("PUBLIC_DOWNLOADS"):
         return
 
     if current_user.is_authenticated:
@@ -1057,9 +1592,97 @@ def edit_project_dates(project_id):
         flash('Invalid project end date format.', 'error')
         return redirect(url_for('view_project', project_id=project.id))
 
+    min_date = datetime(2020, 1, 1).date()
+    if project.start_date and project.start_date < min_date:
+        flash('Start date cannot be before 2020.', 'error')
+        return redirect(url_for('view_project', project_id=project.id))
+    if project.end_date and project.end_date < min_date:
+        flash('End date cannot be before 2020.', 'error')
+        return redirect(url_for('view_project', project_id=project.id))
+    if project.start_date and project.end_date and project.end_date < project.start_date:
+        flash('End date must be after start date.', 'error')
+        return redirect(url_for('view_project', project_id=project.id))
+
     db.session.commit()
     flash('Project dates updated.', 'ok')
     return redirect(url_for('view_project', project_id=project.id))
+
+
+@app.post('/project/<int:project_id>/slug')
+@app.post('/lab/<lab_slug>/project/<int:project_id>/slug')
+@login_required
+def update_project_slug(project_id, lab_slug=None):
+    project = Project.query.get_or_404(project_id)
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if project.database_id != lab.id:
+            abort(403)
+        set_current_lab(lab)
+
+    if not can_manage_project(project):
+        abort(403)
+
+    raw = (request.form.get('slug') or '').strip()
+    if not raw:
+        project.slug = None
+        db.session.commit()
+        flash('Project slug cleared.', 'ok')
+        return redirect(url_for('view_project', project_id=project.id))
+
+    def _slugify(s: str) -> str:
+        s = s.lower()
+        s = re.sub(r"[^a-z0-9\-]+", '-', s)
+        s = re.sub(r"-+", '-', s).strip('-')
+        return s
+
+    normalized = _slugify(raw)
+    if normalized != raw:
+        flash('Slug must use lowercase letters, numbers, and hyphens only.', 'error')
+        return redirect(url_for('view_project', project_id=project.id))
+
+    existing = Project.query.filter(
+        Project.database_id == project.database_id,
+        Project.slug == normalized,
+        Project.id != project.id
+    ).first()
+    if existing:
+        flash('That slug is already used by another project in this lab.', 'error')
+        return redirect(url_for('view_project', project_id=project.id))
+
+    project.slug = normalized
+    db.session.commit()
+    flash('Project slug updated.', 'ok')
+    return redirect(url_for('view_project', project_id=project.id))
+
+
+@app.post('/project/<int:project_id>/delete')
+@app.post('/lab/<lab_slug>/project/<int:project_id>/delete')
+def delete_project(project_id, lab_slug=None):
+    project = Project.query.get_or_404(project_id)
+
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if project.database_id != lab.id:
+            abort(403)
+        set_current_lab(lab)
+
+    if not can_manage_project(project):
+        abort(403)
+
+    lab = project.database
+    try:
+        db.session.delete(project)
+        db.session.commit()
+        flash('Project deleted.', 'ok')
+    except Exception:
+        db.session.rollback()
+        flash('Failed to delete project.', 'error')
+        return redirect(url_for('view_project', project_id=project.id))
+
+    if lab:
+        lab_key = lab.slug or str(lab.id)
+        return redirect(url_for('all_projects_for_lab', lab_slug=lab_key))
+    return redirect(url_for('index'))
 
 
 # ---- Sample Attributes ----
@@ -1152,6 +1775,11 @@ def add_project_sample_class(project_id):
         flash('Select a Sample Class to add to this project.', 'error')
         return redirect(url_for('view_project', project_id=project.id))
 
+    sc = SampleClass.query.get(sample_class_id)
+    if not sc or sc.database_id != project.database_id:
+        flash('Selected Sample Class is not part of this lab.', 'error')
+        return redirect(url_for('view_project', project_id=project.id))
+
     try:
         attrs = json.loads(attrs_raw) if attrs_raw else None
         if attrs is not None and not isinstance(attrs, list):
@@ -1193,8 +1821,23 @@ def delete_project_sample_class(project_id, psc_id):
 
 @app.route('/api/project/<int:project_id>/sample-class/<int:class_id>/attrs')
 def api_project_class_attrs(project_id, class_id):
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('api_project_class_attrs_for_lab', lab_slug=slug, project_id=project_id, class_id=class_id))
+    return jsonify([])
+
+
+@app.route('/lab/<lab_slug>/api/project/<int:project_id>/sample-class/<int:class_id>/attrs')
+def api_project_class_attrs_for_lab(lab_slug, project_id, class_id):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    project = Project.query.get_or_404(project_id)
+    if project.database_id != lab.id:
+        abort(403)
     # Return merged attributes: lab-level class attrs overridden/extended by project-specific attrs
     sc = SampleClass.query.get_or_404(class_id)
+    if sc.database_id != lab.id:
+        abort(403)
     base_attrs = safe_json_loads(sc.attributes_json, [])
 
     psc = ProjectSampleClass.query.filter_by(project_id=project_id, sample_class_id=class_id).first()
@@ -1218,6 +1861,19 @@ def api_project_class_attrs(project_id, class_id):
 
 @app.route("/api/project/<int:project_id>/sample-attrs")
 def api_project_sample_attrs(project_id):
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('api_project_sample_attrs_for_lab', lab_slug=slug, project_id=project_id))
+    return jsonify([])
+
+
+@app.route("/lab/<lab_slug>/api/project/<int:project_id>/sample-attrs")
+def api_project_sample_attrs_for_lab(lab_slug, project_id):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    project = Project.query.get_or_404(project_id)
+    if project.database_id != lab.id:
+        abort(403)
     attrs = get_project_attrs(project_id)
 
     def serialize(a: ProjectSampleAttribute):
@@ -1235,30 +1891,503 @@ def api_project_sample_attrs(project_id):
 
 @app.route('/api/sample/<int:sample_id>/attr-values')
 def api_sample_attr_values(sample_id):
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('api_sample_attr_values_for_lab', lab_slug=slug, sample_id=sample_id))
+    return jsonify({})
+
+
+@app.route('/lab/<lab_slug>/api/sample/<int:sample_id>/attr-values')
+def api_sample_attr_values_for_lab(lab_slug, sample_id):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
     s = Sample.query.get_or_404(sample_id)
+    if not s.project or s.project.database_id != lab.id:
+        abort(403)
     root = get_sample_root(s)
     vals = SampleAttributeValue.query.filter_by(sample_id=root.id).all()
     out = {str(v.attribute_id): v.value for v in vals}
     return jsonify(out)
+
+
+@app.route('/api/geo/countries')
+@login_required
+def api_geo_countries():
+    countries = []
+    try:
+        for c in pycountry.countries:
+            code = getattr(c, 'alpha_2', None) or getattr(c, 'alpha_3', None)
+            if not code:
+                continue
+            countries.append({'code': code, 'name': c.name})
+    except Exception:
+        countries = []
+    countries.sort(key=lambda x: x['name'])
+    return jsonify(countries)
+
+
+@app.route('/api/geo/subdivisions')
+@login_required
+def api_geo_subdivisions():
+    country = (request.args.get('country') or '').strip().upper()
+    subdivisions = []
+    if country:
+        try:
+            subs = pycountry.subdivisions.get(country_code=country)
+            for s in subs:
+                code = s.code.split('-', 1)[-1] if s.code else s.name
+                subdivisions.append({'code': code, 'name': s.name})
+        except Exception:
+            subdivisions = []
+    subdivisions.sort(key=lambda x: x['name'])
+    return jsonify(subdivisions)
 
 # ---- Projects ----
 
 
 @app.route("/projects/create", methods=["POST"])
 def create_project():
+    slug = session.get('current_lab_slug')
+    if not slug:
+        flash('Select a lab before creating a project.', 'error')
+        return redirect(url_for('index'))
+
+    lab = Database.query.filter_by(slug=slug).first()
+    if not lab and str(slug).isdigit():
+        lab = Database.query.get(int(slug))
+    if not lab:
+        flash('Lab not found.', 'error')
+        return redirect(url_for('index'))
+
+    member = DatabaseMember.query.filter_by(database_id=lab.id, user_id=_uid()).first()
+    if not member or member.role not in ('owner', 'admin', 'editor'):
+        abort(403)
+
     title = request.form.get("title", "").strip()
     desc = request.form.get("description", "").strip()
+    pi_user_id = request.form.get("pi_user_id", type=int)
     if not title:
         flash("Project title is required.", "error")
-        return redirect(url_for("index"))
-    project = Project(title=title, description=desc, creator_id=_uid())
+        if lab.slug:
+            return redirect(url_for('view_lab_by_slug', slug=lab.slug))
+        return redirect(url_for('view_lab', db_id=lab.id))
+
+    project = Project(title=title, description=desc, creator_id=_uid(), database_id=lab.id)
+    if pi_user_id:
+        member_ids = {m.user_id for m in DatabaseMember.query.filter_by(database_id=lab.id).all()}
+        if pi_user_id in member_ids:
+            project.pi_user_id = pi_user_id
     db.session.add(project)
     db.session.commit()
+    log_lab_event(lab, "created", "project", project.id, project.title)
     return redirect(url_for("view_project", project_id=project.id))
 
 
+@app.post('/labs/create')
+@login_required
+def create_lab():
+    name = (request.form.get('name') or '').strip()
+    if not name:
+        flash('Lab name is required.', 'error')
+        return redirect(url_for('index'))
+
+    def slugify(s):
+        s = s.lower()
+        s = re.sub(r"[^a-z0-9\-]+", '-', s)
+        s = re.sub(r"-+", '-', s).strip('-')
+        return s or None
+
+    # Prevent duplicate lab names
+    existing_name = Database.query.filter_by(name=name).first()
+    if existing_name:
+        flash('A lab with that name already exists. Choose a different name.', 'error')
+        return redirect(url_for('index'))
+
+    base = slugify(name)
+    # If slugify removed all characters (e.g. name contains only symbols), fall back to a safe base
+    if not base:
+        base = f"lab-{current_user.id}-{int(datetime.utcnow().timestamp())}"
+
+    # Ensure slug uniqueness
+    slug = base
+    i = 1
+    while Database.query.filter_by(slug=slug).first():
+        slug = f"{base}-{i}"
+        i += 1
+
+    db_obj = Database(name=name, owner_id=current_user.id, slug=slug)
+    db.session.add(db_obj)
+    try:
+        db.session.flush()  # get id
+        # create per-lab sqlite file and initialize schema for lab-scoped tables
+        lab_db_filename = os.path.join('Labs', f"{slug}.db")
+        lab_db_path = os.path.join(BASE_DIR, lab_db_filename)
+        # ensure unique filename if exists
+        j = 1
+        base_path = lab_db_path
+        while os.path.exists(lab_db_path):
+            lab_db_path = os.path.join(BASE_DIR, 'Labs', f"{slug}-{j}.db")
+            lab_db_filename = os.path.join('Labs', f"{slug}-{j}.db")
+            j += 1
+        # create empty file
+        open(lab_db_path, 'a').close()
+        # create selected tables in the lab DB (exclude backend tables)
+        engine = create_engine(f"sqlite:///{lab_db_path}")
+        exclude = set(['database', 'database_member', 'user', 'invitation'])
+        for tbl_name, tbl in db.metadata.tables.items():
+            if tbl_name in exclude:
+                continue
+            try:
+                tbl.create(bind=engine, checkfirst=True)
+            except Exception:
+                pass
+        db_obj.db_filename = lab_db_filename
+        member = DatabaseMember(database_id=db_obj.id, user_id=current_user.id, role='owner')
+        db.session.add(member)
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        flash('Failed to create lab due to a database constraint (possible duplicate). Try a different name.', 'error')
+        return redirect(url_for('index'))
+
+    flash('Lab created.', 'ok')
+    if db_obj.slug:
+        return redirect(url_for('view_lab_by_slug', slug=db_obj.slug))
+    return redirect(url_for('view_lab', db_id=db_obj.id))
+
+
+@app.route('/lab/<int:db_id>')
+@login_required
+def view_lab(db_id):
+    lab = Database.query.get_or_404(db_id)
+    # membership check: allow viewing if member or lab is public
+    current_membership = DatabaseMember.query.filter_by(database_id=lab.id, user_id=_uid()).first()
+    if not current_membership and lab.default_visibility == VIS_PRIVATE:
+        abort(403)
+
+    set_current_lab(lab)
+
+    projects = Project.query.filter_by(database_id=lab.id).order_by(Project.created_at.desc()).all()
+    facilities = Facility.query.filter_by(database_id=lab.id).order_by(Facility.name.asc()).all()
+    can_manage = bool(current_membership and current_membership.role in ("owner", "admin"))
+    is_owner = bool(current_membership and current_membership.role == "owner")
+    lab_members = lab.members if lab else []
+    return render_template('lab_home.html', current_lab=lab, projects=projects, facilities=facilities, can_manage=can_manage, is_owner=is_owner, lab_members=lab_members)
+
+
+@app.route('/lab/slug/<slug>')
+@login_required
+def view_lab_by_slug(slug):
+    lab = Database.query.filter_by(slug=slug).first_or_404()
+    current_membership = DatabaseMember.query.filter_by(database_id=lab.id, user_id=_uid()).first()
+    if not current_membership and lab.default_visibility == VIS_PRIVATE:
+        abort(403)
+    set_current_lab(lab)
+    projects = Project.query.filter_by(database_id=lab.id).order_by(Project.created_at.desc()).all()
+    facilities = Facility.query.filter_by(database_id=lab.id).order_by(Facility.name.asc()).all()
+    can_manage = bool(current_membership and current_membership.role in ("owner", "admin"))
+    is_owner = bool(current_membership and current_membership.role == "owner")
+    lab_members = lab.members if lab else []
+    return render_template('lab_home.html', current_lab=lab, projects=projects, facilities=facilities, can_manage=can_manage, is_owner=is_owner, lab_members=lab_members)
+
+
+@app.post('/lab/<lab_slug>/settings/timezone')
+@login_required
+def update_lab_timezone(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    role = db_role(current_user, lab.id)
+    if role != 'owner':
+        abort(403)
+    tz = (request.form.get('time_zone') or '').strip() or 'UTC'
+    try:
+        ZoneInfo(tz)
+    except Exception:
+        flash('Time zone saved, but tzdata is missing on this system. Times will display in UTC until tzdata is installed.', 'warning')
+    lab.time_zone = tz
+    db.session.commit()
+    flash('Lab time zone updated.', 'ok')
+    return redirect(url_for('view_lab_by_slug', slug=lab.slug) if lab.slug else url_for('view_lab', db_id=lab.id))
+
+
+@app.route('/lab/<lab_slug>/timeline')
+@login_required
+def lab_timeline(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+
+    types_list = request.args.getlist('types')
+    entities_list = request.args.getlist('entities')
+    if not types_list:
+        types_param = (request.args.get('types') or '').strip()
+        types_list = [t.strip() for t in types_param.split(',') if t.strip()]
+    if not entities_list:
+        entities_param = (request.args.get('entities') or '').strip()
+        entities_list = [t.strip() for t in entities_param.split(',') if t.strip()]
+    event_types = set(types_list) if types_list else None
+    entity_types = set(entities_list) if entities_list else None
+
+    events = fetch_lab_events(lab, event_types=event_types, entity_types=entity_types)
+
+    grouped = {}
+    for ev in events:
+        ts = ev.get('occurred_at') or ''
+        key = ts[:7] if len(ts) >= 7 else 'unknown'
+        grouped.setdefault(key, []).append(ev)
+    for k in grouped:
+        grouped[k].sort(key=lambda x: x.get('occurred_at', ''), reverse=True)
+
+    return render_template(
+        'lab_timeline.html',
+        current_lab=lab,
+        grouped=grouped,
+        selected_types=event_types or set(),
+        selected_entities=entity_types or set(),
+    )
+
+
+@app.route('/lab/<int:db_id>/members')
+@login_required
+def lab_members_api(db_id):
+    """Return JSON with lists of member user ids and admin user ids for a lab.
+
+    Only lab members (or if the lab is public) may retrieve this listing.
+    """
+    lab = Database.query.get_or_404(db_id)
+    is_member = DatabaseMember.query.filter_by(database_id=lab.id, user_id=_uid()).first()
+    if not is_member and lab.default_visibility == VIS_PRIVATE:
+        abort(403)
+
+    return jsonify({
+        'members': lab.member_ids,
+        'admins': lab.admin_ids,
+    })
+
+
+
+@app.post('/lab/<int:db_id>/members/add')
+@login_required
+def lab_members_add(db_id):
+    """Invite or add a user to the lab by email. Only owners/admins may add."""
+    lab = Database.query.get_or_404(db_id)
+    actor = DatabaseMember.query.filter_by(database_id=lab.id, user_id=_uid()).first()
+    if not (actor and actor.role in ("owner", "admin")):
+        abort(403)
+
+    email = (request.form.get('email') or '').strip().lower()
+    role = (request.form.get('role') or 'viewer').strip()
+    if not email:
+        flash('Email is required to invite a member.', 'error')
+        return redirect(url_for('view_lab', db_id=lab.id))
+
+    user = User.query.filter_by(email=email).first()
+    if user:
+        existing = DatabaseMember.query.filter_by(database_id=lab.id, user_id=user.id).first()
+        if existing:
+            flash('User is already a member of this lab.', 'info')
+            return redirect(url_for('view_lab', db_id=lab.id))
+
+    pending = Invitation.query.filter_by(database_id=lab.id, invitee_email=email, accepted_at=None).first()
+    if pending:
+        flash('An invitation is already pending for this user.', 'info')
+        return redirect(url_for('view_lab', db_id=lab.id))
+
+    # Create a pending invitation for this email address
+    try:
+        inv = Invitation(database_id=lab.id, inviter_id=_uid(), invitee_email=email, role=role)
+        db.session.add(inv)
+        db.session.commit()
+        flash(f'Invitation sent to {email}.', 'ok')
+    except Exception:
+        db.session.rollback()
+        flash('Failed to create invitation.', 'error')
+    return redirect(url_for('view_lab', db_id=lab.id))
+
+
+@app.post('/lab/<int:db_id>/members/remove')
+@login_required
+def lab_members_remove(db_id):
+    """Remove a member from the lab. Owners cannot be removed via this endpoint."""
+    lab = Database.query.get_or_404(db_id)
+    actor = DatabaseMember.query.filter_by(database_id=lab.id, user_id=_uid()).first()
+    if not (actor and actor.role in ("owner", "admin")):
+        abort(403)
+
+    user_id = request.form.get('user_id')
+    if not user_id:
+        flash('user_id required', 'error')
+        return redirect(url_for('view_lab', db_id=lab.id))
+
+    try:
+        uid = int(user_id)
+    except Exception:
+        flash('Invalid user id', 'error')
+        return redirect(url_for('view_lab', db_id=lab.id))
+
+    member = DatabaseMember.query.filter_by(database_id=lab.id, user_id=uid).first()
+    if not member:
+        flash('Member not found', 'error')
+        return redirect(url_for('view_lab', db_id=lab.id))
+
+    if member.role == 'owner':
+        flash('Cannot remove the owner via this action. Transfer ownership first.', 'error')
+        return redirect(url_for('view_lab', db_id=lab.id))
+
+    db.session.delete(member)
+    db.session.commit()
+    flash('Member removed.', 'ok')
+    return redirect(url_for('view_lab', db_id=lab.id))
+
+
+@app.post('/lab/<int:db_id>/members/change-role')
+@login_required
+def lab_members_change_role(db_id):
+    """Change a member's role. Only owners may promote to owner; admins may change other roles."""
+    lab = Database.query.get_or_404(db_id)
+    actor = DatabaseMember.query.filter_by(database_id=lab.id, user_id=_uid()).first()
+    if not actor:
+        abort(403)
+
+    target_id = request.form.get('user_id')
+    new_role = (request.form.get('role') or '').strip()
+    if not target_id or not new_role:
+        flash('user_id and role are required.', 'error')
+        return redirect(url_for('view_lab', db_id=lab.id))
+
+    try:
+        tid = int(target_id)
+    except Exception:
+        flash('Invalid user id', 'error')
+        return redirect(url_for('view_lab', db_id=lab.id))
+
+    target = DatabaseMember.query.filter_by(database_id=lab.id, user_id=tid).first()
+    if not target:
+        flash('Target member not found.', 'error')
+        return redirect(url_for('view_lab', db_id=lab.id))
+
+    # If trying to set owner, require the actor to be owner
+    if new_role == 'owner' and actor.role != 'owner':
+        flash('Only an owner may promote someone to owner.', 'error')
+        return redirect(url_for('view_lab', db_id=lab.id))
+
+    # Prevent demoting the only owner
+    if target.role == 'owner' and new_role != 'owner':
+        other_owner = DatabaseMember.query.filter(DatabaseMember.database_id == lab.id, DatabaseMember.user_id != target.user_id, DatabaseMember.role == 'owner').first()
+        if not other_owner:
+            flash('Cannot demote the only owner. Transfer ownership first.', 'error')
+            return redirect(url_for('view_lab', db_id=lab.id))
+
+    target.role = new_role
+    db.session.commit()
+    flash('Member role updated.', 'ok')
+    return redirect(url_for('view_lab', db_id=lab.id))
+
+
+@app.post('/invites/<int:inv_id>/accept')
+@login_required
+def invite_accept(inv_id):
+    inv = Invitation.query.get_or_404(inv_id)
+    if inv.accepted_at:
+        flash('Invitation already handled.', 'info')
+        return redirect(url_for('index'))
+
+    if current_user.email.lower() != inv.invitee_email.lower():
+        abort(403)
+
+    # add member if not already
+    existing = DatabaseMember.query.filter_by(database_id=inv.database_id, user_id=current_user.id).first()
+    try:
+        if not existing:
+            member = DatabaseMember(database_id=inv.database_id, user_id=current_user.id, role=inv.role or 'viewer')
+            db.session.add(member)
+        inv.accepted_at = datetime.utcnow()
+        inv.accepted_by = current_user.id
+        db.session.commit()
+        flash(f'You have joined {inv.database.name}.', 'ok')
+    except Exception:
+        db.session.rollback()
+        flash('Failed to accept invitation.', 'error')
+
+    return redirect(url_for('view_lab', db_id=inv.database_id))
+
+
+@app.post('/invites/<int:inv_id>/decline')
+@login_required
+def invite_decline(inv_id):
+    inv = Invitation.query.get_or_404(inv_id)
+    if current_user.email.lower() != inv.invitee_email.lower():
+        abort(403)
+    try:
+        db.session.delete(inv)
+        db.session.commit()
+        flash('Invitation declined.', 'info')
+    except Exception:
+        db.session.rollback()
+        flash('Failed to decline invitation.', 'error')
+    return redirect(url_for('index'))
+
+
+@app.post('/lab/<int:db_id>/projects/create')
+@login_required
+def create_project_for_lab(db_id):
+    lab = Database.query.get_or_404(db_id)
+    set_current_lab(lab)
+    member = DatabaseMember.query.filter_by(database_id=lab.id, user_id=_uid()).first()
+    if not member or member.role not in ('owner', 'admin', 'editor'):
+        abort(403)
+    title = (request.form.get('title') or '').strip()
+    desc = (request.form.get('description') or '').strip()
+    if not title:
+        flash('Project title is required.', 'error')
+        return redirect(url_for('view_lab', db_id=lab.id))
+    project = Project(title=title, description=desc, creator_id=_uid(), database_id=lab.id)
+    db.session.add(project)
+    db.session.commit()
+    log_lab_event(lab, "created", "project", project.id, project.title)
+    flash('Project created.', 'ok')
+    return redirect(url_for('view_project', project_id=project.id))
+
+
+@app.post('/lab/<int:db_id>/delete')
+@login_required
+def delete_lab(db_id):
+    """Delete a lab: remove backend metadata and optionally remove the per-lab DB file.
+
+    Only the owner may delete a lab. This will remove the Database row and
+    cascade-delete related backend-stored content (projects, samples, experiments)
+    that are stored in the backend DB.
+    """
+    lab = Database.query.get_or_404(db_id)
+    # only owner may delete
+    if lab.owner_id != _uid():
+        abort(403)
+
+    # remember file path to remove
+    relpath = lab.db_filename
+    try:
+        db.session.delete(lab)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        flash('Failed to delete lab from backend database.', 'error')
+        return redirect(url_for('view_lab', db_id=db_id))
+
+    # remove per-lab DB file if present
+    if relpath:
+        try:
+            full = os.path.join(BASE_DIR, relpath)
+            if os.path.exists(full):
+                os.remove(full)
+        except Exception:
+            # non-fatal
+            pass
+
+    flash('Lab deleted.', 'ok')
+    return redirect(url_for('index'))
+
+
 @app.route("/project/<int:project_id>")
-def view_project(project_id):
+@app.route("/lab/<lab_slug>/project/<int:project_id>")
+def view_project(project_id, lab_slug=None):
     try:
         project = Project.query.get_or_404(project_id)
     except OperationalError as e:
@@ -1272,39 +2401,140 @@ def view_project(project_id):
         # retry
         project = Project.query.get_or_404(project_id)
 
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if project.database_id != lab.id:
+            abort(403)
+        set_current_lab(lab)
+    else:
+        # enforce lab-prefixed access
+        if project.database:
+            lab_key = project.database.slug or str(project.database.id)
+            return redirect(url_for('view_project', lab_slug=lab_key, project_id=project.id))
+
     roots = (Sample.query
              .filter_by(project_id=project.id, parent_id=None)
              .order_by(Sample.name.asc())
              .all())
     sample_tree = [serialize_sample_tree(r) for r in roots]
+    sample_tree_by_stock = {}
+    for r in roots:
+        stock_obj = getattr(r, 'stock_material', None)
+        if stock_obj:
+            label = stock_obj.name + (f" — {stock_obj.lot_number}" if stock_obj.lot_number else "")
+            key = f"stock:{stock_obj.id}"
+            entry = sample_tree_by_stock.setdefault(key, {
+                'label': label,
+                'stock_id': stock_obj.id,
+                'roots': []
+            })
+            entry['roots'].append(serialize_sample_tree(r))
+        else:
+            key = 'nostock'
+            entry = sample_tree_by_stock.setdefault(key, {
+                'label': 'No Stock Material',
+                'stock_id': None,
+                'roots': []
+            })
+            entry['roots'].append(serialize_sample_tree(r))
+    # sort stock groups (No Stock Material last)
+    sample_tree_by_stock = dict(sorted(
+        sample_tree_by_stock.items(),
+        key=lambda kv: (kv[1]['label'] == 'No Stock Material', kv[1]['label'].lower())
+    ))
 
-    pi_candidates = get_db_members_for_project(project)
+    # PI candidates (prefer lab members)
+    try:
+        pi_candidates = get_db_members_for_project(project)
+        if not pi_candidates:
+            pi_candidates = User.query.order_by(User.name.asc()).all()
+    except Exception:
+        pi_candidates = get_db_members_for_project(project)
     can_manage = can_manage_project(project)
+    lab_role = db_role(current_user, project.database_id)
 
     # sample class options (lab-level) and project-specific sample classes
-    sample_classes = SampleClass.query.order_by(SampleClass.name.asc()).all()
+    sample_classes = SampleClass.query.filter_by(database_id=project.database_id).order_by(SampleClass.name.asc()).all()
     project_sample_classes = ProjectSampleClass.query.filter_by(project_id=project.id).all()
+
+    experiment_opts = [
+        {"id": e.id, "title": e.title, "project_id": e.project_id}
+        for e in Experiment.query.filter_by(project_id=project.id).order_by(Experiment.created_at.desc()).all()
+    ]
+    sample_opts = [
+        {"id": s.id, "name": s.name, "project_id": s.project_id, "stock_material_id": (s.stock_material_id if hasattr(s, 'stock_material_id') else None)}
+        for s in Sample.query.filter_by(project_id=project.id).order_by(Sample.created_at.desc()).all()
+    ]
+    sc_name_map = {sc.id: sc.name for sc in sample_classes}
+    stock_material_opts = [
+        {
+            "id": m.id,
+            "name": m.name,
+            "lot_number": m.lot_number,
+            "quantity": m.quantity,
+            "unit": m.unit,
+            "class_attrs": safe_json_loads(getattr(m, 'class_attrs_json', None), {}),
+            "sample_class_id": getattr(m, 'sample_class_id', None),
+            "sample_class_name": sc_name_map.get(getattr(m, 'sample_class_id', None))
+        }
+        for m in StockMaterial.query.filter_by(database_id=project.database_id).order_by(StockMaterial.name.asc()).all()
+    ]
 
     return render_template(
         "project.html",
         project=project,
         sample_tree=sample_tree,
+        sample_tree_by_stock=sample_tree_by_stock,
         pi_candidates=pi_candidates,
+        lab_members=pi_candidates,
+        lab_role=lab_role,
         can_manage=can_manage,
         sample_classes=sample_classes,
         project_sample_classes=project_sample_classes,
+        experiment_opts=experiment_opts,
+        sample_opts=sample_opts,
+        stock_material_opts=stock_material_opts,
+        current_lab=project.database,
     )
 
 
 @app.route('/project/<int:project_id>/timeline')
-def project_timeline(project_id):
+@app.route('/lab/<lab_slug>/project/<int:project_id>/timeline')
+def project_timeline(project_id, lab_slug=None):
     """Return timeline events for the project grouped by year-month.
     Events returned include experiments (start/end/created), sample creations,
     maintenance and calibration entries for equipment used in project experiments,
     measurements, documents and experiment logs.
     """
     project = Project.query.get_or_404(project_id)
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if project.database_id != lab.id:
+            abort(403)
+        set_current_lab(lab)
+    else:
+        if project.database:
+            lab_key = project.database.slug or str(project.database.id)
+            return redirect(url_for('project_timeline', lab_slug=lab_key, project_id=project.id))
     events = []
+
+    # project start/end dates
+    if project.start_date:
+        events.append({
+            'type': 'project_start',
+            'timestamp': project.start_date.isoformat(),
+            'title': project.title,
+            'id': project.id,
+            'url': url_for('view_project', lab_slug=lab.slug, project_id=project.id) if lab_slug else url_for('view_project', project_id=project.id)
+        })
+    if project.end_date:
+        events.append({
+            'type': 'project_end',
+            'timestamp': project.end_date.isoformat(),
+            'title': project.title,
+            'id': project.id,
+            'url': url_for('view_project', lab_slug=lab.slug, project_id=project.id) if lab_slug else url_for('view_project', project_id=project.id)
+        })
 
     # experiments
     exps = project.experiments or []
@@ -1448,13 +2678,29 @@ def create_experiment(project_id):
                             description=desc, creator_id=_uid())
     db.session.add(experiment)
     db.session.commit()
+    if project.database:
+        log_lab_event(project.database, "created", "experiment", experiment.id, experiment.title, {"project_id": project.id})
     return redirect(url_for("view_experiment", experiment_id=experiment.id))
 
 
 # ---- Experiments ----
 @app.get("/experiment/<int:experiment_id>")
-def view_experiment(experiment_id):
+@app.get("/lab/<lab_slug>/experiment/<int:experiment_id>")
+@app.get("/lab/<lab_slug>/project/<int:project_id>/experiment/<int:experiment_id>")
+def view_experiment(experiment_id, lab_slug=None, project_id=None):
     exp = Experiment.query.get_or_404(experiment_id)
+    project = exp.project
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if not project or project.database_id != lab.id:
+            abort(403)
+        if project_id and project.id != project_id:
+            abort(404)
+        set_current_lab(lab)
+    else:
+        if project and project.database:
+            lab_key = project.database.slug or str(project.database.id)
+            return redirect(url_for('view_experiment', lab_slug=lab_key, project_id=project.id, experiment_id=exp.id))
 
     # Build exp_tree from root ancestor to show in template
     root = exp
@@ -1479,10 +2725,12 @@ def view_experiment(experiment_id):
     sample_roots = [s for s in exp.project.samples if not s.parent_id]
     linked_sample_tree = [serialize_sample_tree(r) for r in sample_roots]
 
-    # equipment choices scoped to project (nullable project_id means global)
+    # equipment choices scoped to project and lab
     try:
+        lab = exp.project.database
         equipment_choices = Equipment.query.filter(
-            (Equipment.project_id == exp.project_id) | (Equipment.project_id == None)
+            (Equipment.project_id == exp.project_id) |
+            (Equipment.database_id == (lab.id if lab else None))
         ).order_by(Equipment.name).all()
     except Exception:
         # If Equipment has no project_id column yet (older DB), fall back to all equipment
@@ -1497,6 +2745,7 @@ def view_experiment(experiment_id):
         linked_sample_tree=linked_sample_tree[0] if linked_sample_tree else None,
         linked_sample_ids=linked_ids,
         equipment_choices=equipment_choices,
+        current_lab=exp.project.database,
     )
 
 
@@ -1669,10 +2918,25 @@ def download(doc_id):
 # ---- Samples ----
 @app.route("/samples")
 def list_samples():
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('list_samples_for_lab', lab_slug=slug, **request.args))
+    flash('Select a lab to view samples.', 'error')
+    return redirect(url_for('index'))
+
+
+@app.route("/lab/<lab_slug>/samples")
+def list_samples_for_lab(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    lab_role = db_role(current_user, lab.id)
     q = request.args.get("q", "").strip()
     view = request.args.get("view", "project")  # default to project tree
 
-    qry = Sample.query.order_by(Sample.created_at.desc())
+    projects = Project.query.filter_by(database_id=lab.id).order_by(Project.title.asc()).all()
+    project_ids = [p.id for p in projects]
+
+    qry = Sample.query.filter(Sample.project_id.in_(project_ids)).order_by(Sample.created_at.desc())
     if q:
         like = f"%{q}%"
         qry = qry.filter(
@@ -1684,32 +2948,85 @@ def list_samples():
         )
     samples = qry.all()
 
-    projects = Project.query.order_by(Project.title.asc()).all()
-
     # build roots per project for the tree view
     roots_by_project = {
         p.id: [s for s in p.samples if not s.parent_id] for p in projects}
 
+    # build grouped tree per project: Project -> Sample Class -> Stock Material -> Sample
+    project_tree = {}
+    for p in projects:
+        roots = roots_by_project.get(p.id, [])
+        class_groups = {}
+        for r in roots:
+            class_name = None
+            if getattr(r, 'sample_class', None):
+                class_name = r.sample_class.name
+            elif getattr(r, 'stock_material', None) and getattr(r.stock_material, 'sample_class', None):
+                class_name = r.stock_material.sample_class.name
+            if not class_name:
+                class_name = 'Unclassified'
+
+            stock_obj = getattr(r, 'stock_material', None)
+            if stock_obj:
+                stock_label = stock_obj.name + (f" — {stock_obj.lot_number}" if stock_obj.lot_number else "")
+                stock_key = f"stock:{stock_obj.id}"
+                stock_entry = class_groups.setdefault(class_name, {}).setdefault(stock_key, {
+                    'label': stock_label,
+                    'stock_id': stock_obj.id,
+                    'roots': []
+                })
+            else:
+                stock_key = 'nostock'
+                stock_entry = class_groups.setdefault(class_name, {}).setdefault(stock_key, {
+                    'label': 'No Stock Material',
+                    'stock_id': None,
+                    'roots': []
+                })
+            stock_entry['roots'].append(serialize_sample_tree(r))
+
+        # sort class groups (Unclassified last)
+        sorted_class_names = sorted(class_groups.keys(), key=lambda n: (n == 'Unclassified', n.lower()))
+        class_list = []
+        for cname in sorted_class_names:
+            stocks = class_groups[cname]
+            sorted_stock_keys = sorted(stocks.keys(), key=lambda k: (stocks[k]['label'] == 'No Stock Material', stocks[k]['label'].lower()))
+            class_list.append({
+                'class_name': cname,
+                'stocks': [stocks[k] for k in sorted_stock_keys]
+            })
+        project_tree[p.id] = class_list
+
     # options for dependent dropdowns
     experiment_opts = [
         {"id": e.id, "title": e.title, "project_id": e.project_id}
-        for e in Experiment.query.order_by(Experiment.created_at.desc()).all()
+        for e in Experiment.query.filter(Experiment.project_id.in_(project_ids)).order_by(Experiment.created_at.desc()).all()
     ]
     sample_opts = [
         {"id": s.id, "name": s.name, "project_id": s.project_id, "stock_material_id": (s.stock_material_id if hasattr(s, 'stock_material_id') else None)}
-        for s in Sample.query.order_by(Sample.created_at.desc()).all()
+        for s in Sample.query.filter(Sample.project_id.in_(project_ids)).order_by(Sample.created_at.desc()).all()
     ]
+    sc_name_map = {sc.id: sc.name for sc in SampleClass.query.filter_by(database_id=lab.id).all()}
     stock_material_opts = [
-        {"id": m.id, "name": m.name, "lot_number": m.lot_number}
-        for m in StockMaterial.query.order_by(StockMaterial.name.asc()).all()
+        {
+            "id": m.id,
+            "name": m.name,
+            "lot_number": m.lot_number,
+            "quantity": m.quantity,
+            "unit": m.unit,
+            "class_attrs": safe_json_loads(getattr(m, 'class_attrs_json', None), {}),
+            "sample_class_id": getattr(m, 'sample_class_id', None),
+            "sample_class_name": sc_name_map.get(getattr(m, 'sample_class_id', None))
+        }
+        for m in StockMaterial.query.filter_by(database_id=lab.id).order_by(StockMaterial.name.asc()).all()
     ]
     sample_class_opts = []
-    for sc in SampleClass.query.order_by(SampleClass.name.asc()).all():
+    for sc in SampleClass.query.filter_by(database_id=lab.id).order_by(SampleClass.name.asc()).all():
         attrs = safe_json_loads(sc.attributes_json, [])
         sample_class_opts.append({
             "id": sc.id,
             "name": sc.name,
             "description": sc.description,
+            "slug": sc.slug,
             "attributes": attrs,
         })
 
@@ -1724,13 +3041,26 @@ def list_samples():
         q=q,
         view=view,
         stock_material_opts=stock_material_opts,
+        project_tree=project_tree,
+        current_lab=lab,
+        lab_role=lab_role,
     )
 
 
 @app.route('/api/sample-classes')
 def api_sample_classes():
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('api_sample_classes_for_lab', lab_slug=slug))
+    return jsonify([])
+
+
+@app.route('/lab/<lab_slug>/api/sample-classes')
+def api_sample_classes_for_lab(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
     out = []
-    for sc in SampleClass.query.order_by(SampleClass.name.asc()).all():
+    for sc in SampleClass.query.filter_by(database_id=lab.id).order_by(SampleClass.name.asc()).all():
         try:
             attrs = safe_json_loads(sc.attributes_json, [])
         except Exception:
@@ -1739,6 +3069,7 @@ def api_sample_classes():
             'id': sc.id,
             'name': sc.name,
             'description': sc.description,
+            'slug': sc.slug,
             'attributes': attrs,
         })
     return jsonify(out)
@@ -1746,8 +3077,20 @@ def api_sample_classes():
 
 @app.route('/stock-materials')
 def list_stock_materials():
-    sample_classes = SampleClass.query.order_by(SampleClass.name.asc()).all()
-    materials = StockMaterial.query.order_by(StockMaterial.name.asc()).all()
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('list_stock_materials_for_lab', lab_slug=slug))
+    flash('Select a lab to view stock materials.', 'error')
+    return redirect(url_for('index'))
+
+
+@app.route('/lab/<lab_slug>/stock-materials')
+def list_stock_materials_for_lab(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    lab_role = db_role(current_user, lab.id)
+    sample_classes = SampleClass.query.filter_by(database_id=lab.id).order_by(SampleClass.name.asc()).all()
+    materials = StockMaterial.query.filter_by(database_id=lab.id).order_by(StockMaterial.name.asc()).all()
     materials_by_class = {sc.id: [] for sc in sample_classes}
     uncategorized = []
     for m in materials:
@@ -1755,47 +3098,401 @@ def list_stock_materials():
             materials_by_class.setdefault(m.sample_class_id, []).append(m)
         else:
             uncategorized.append(m)
-    return render_template('stock_inventory.html', sample_classes=sample_classes, materials_by_class=materials_by_class, uncategorized=uncategorized)
+    sample_class_opts = []
+    for sc in sample_classes:
+        sample_class_opts.append({
+            "id": sc.id,
+            "name": sc.name,
+            "description": sc.description,
+            "attributes": safe_json_loads(sc.attributes_json, []),
+        })
+    return render_template('stock_inventory.html', sample_classes=sample_classes, materials_by_class=materials_by_class, uncategorized=uncategorized, current_lab=lab, lab_role=lab_role, sample_class_opts=sample_class_opts)
 
 
 @app.route('/stock-materials/create', methods=['POST'])
 def create_stock_material():
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('create_stock_material_for_lab', lab_slug=slug))
+    flash('Select a lab before creating stock materials.', 'error')
+    return redirect(url_for('index'))
+
+
+@app.route('/lab/<lab_slug>/stock-materials/create', methods=['POST'])
+def create_stock_material_for_lab(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
     name = (request.form.get('name') or '').strip()
     if not name:
         flash('Name required for stock material.', 'error')
-        return redirect(url_for('list_stock_materials'))
+        return redirect(url_for('list_stock_materials_for_lab', lab_slug=lab.slug))
+
+    sample_class_id = request.form.get('sample_class_id', type=int)
+    class_values = {}
+    if sample_class_id:
+        sc = SampleClass.query.get(sample_class_id)
+        if not sc or sc.database_id != lab.id:
+            flash('Invalid sample class for this lab.', 'error')
+            return redirect(url_for('list_stock_materials_for_lab', lab_slug=lab.slug))
+        class_attrs = safe_json_loads(sc.attributes_json, [])
+        for a in class_attrs:
+            aname = a.get('name')
+            slug = re.sub('[^0-9a-z]+', '_', (aname or '').lower())
+            key = f'sc_{slug}'
+            val = (request.form.get(key) or '').strip()
+            if a.get('required') and not val:
+                flash(f"Missing required class attribute: {aname}", 'error')
+                return redirect(url_for('list_stock_materials_for_lab', lab_slug=lab.slug))
+            class_values[aname] = val
+
     m = StockMaterial(
         name=name,
         lot_number=(request.form.get('lot_number') or '').strip(),
         quantity=request.form.get('quantity', type=float),
+        original_quantity=request.form.get('quantity', type=float),
         unit=(request.form.get('unit') or '').strip(),
         location=(request.form.get('location') or '').strip(),
         manufacturer=(request.form.get('manufacturer') or '').strip(),
         description=(request.form.get('description') or '').strip(),
-        sample_class_id=request.form.get('sample_class_id', type=int)
+        sample_class_id=sample_class_id,
+        class_attrs_json=json.dumps(class_values) if class_values else None,
+        database_id=lab.id,
     )
     db.session.add(m)
     db.session.commit()
+    try:
+        db.session.add(StockMaterialQuantityLog(
+            stock_material_id=m.id,
+            quantity_before=None,
+            quantity_after=m.quantity,
+            delta=(m.quantity if m.quantity is not None else None),
+            note="Received into inventory",
+        ))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    log_lab_event(lab, "created", "stock_material", m.id, m.name)
     flash('Stock material created.', 'ok')
-    return redirect(url_for('list_stock_materials'))
+    return redirect(url_for('list_stock_materials_for_lab', lab_slug=lab.slug))
 
 
 @app.route('/equipment')
 def list_equipment():
-    # Show all equipment; project filtering available in experiment pages
-    eqs = Equipment.query.order_by(Equipment.name.asc()).all()
-    return render_template('equipment.html', equipment=eqs)
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('list_equipment_for_lab', lab_slug=slug))
+    flash('Select a lab to view equipment.', 'error')
+    return redirect(url_for('index'))
+
+
+@app.route('/lab/<lab_slug>/equipment')
+def list_equipment_for_lab(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    lab_role = db_role(current_user, lab.id)
+    project_ids = [p.id for p in Project.query.filter_by(database_id=lab.id).all()]
+    if project_ids:
+        eqs = (Equipment.query
+               .filter(db.or_(Equipment.project_id.in_(project_ids), Equipment.database_id == lab.id))
+               .order_by(Equipment.name.asc())
+               .all())
+    else:
+        eqs = Equipment.query.filter(Equipment.database_id == lab.id).order_by(Equipment.name.asc()).all()
+    return render_template('equipment.html', equipment=eqs, current_lab=lab, lab_role=lab_role)
+
+
+@app.route('/facilities')
+def list_facilities():
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('list_facilities_for_lab', lab_slug=slug))
+    flash('Select a lab to view facilities.', 'error')
+    return redirect(url_for('index'))
+
+
+@app.route('/lab/<lab_slug>/facilities')
+def list_facilities_for_lab(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    lab_role = db_role(current_user, lab.id)
+    facilities = Facility.query.filter_by(database_id=lab.id).order_by(Facility.name.asc()).all()
+    updated = False
+    for fac in facilities:
+        if not fac.slug:
+            fac.slug = generate_facility_slug(fac.name, lab.id, exclude_id=fac.id)
+            updated = True
+    if updated:
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+    lab_members = lab.members if lab else []
+    return render_template('facility.html', facilities=facilities, current_lab=lab, lab_role=lab_role, lab_members=lab_members)
+
+
+@app.route('/lab/<lab_slug>/facilities/<facility_slug>')
+def view_facility_for_lab(lab_slug, facility_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    lab_role = db_role(current_user, lab.id)
+    fac = Facility.query.filter_by(database_id=lab.id, slug=facility_slug).first()
+    if not fac and facility_slug.isdigit():
+        fac = Facility.query.get(int(facility_slug))
+        if not fac or fac.database_id != lab.id:
+            fac = None
+    if not fac:
+        abort(404)
+    if not fac.slug:
+        fac.slug = generate_facility_slug(fac.name, lab.id, exclude_id=fac.id)
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+    return render_template('facility_view.html', facility=fac, current_lab=lab, lab_role=lab_role)
+
+
+@app.route('/lab/<lab_slug>/facilities/<facility_slug>/update', methods=['POST'])
+def update_facility_for_lab(lab_slug, facility_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    role = db_role(current_user, lab.id)
+    if role not in ('owner', 'admin'):
+        abort(403)
+
+    fac = Facility.query.filter_by(database_id=lab.id, slug=facility_slug).first()
+    if not fac and facility_slug.isdigit():
+        fac = Facility.query.get(int(facility_slug))
+        if not fac or fac.database_id != lab.id:
+            fac = None
+    if not fac:
+        abort(404)
+
+    name = (request.form.get('name') or '').strip()
+    if not name:
+        flash('Facility name is required.', 'error')
+        return redirect(url_for('view_facility_for_lab', lab_slug=lab.slug or lab.id, facility_slug=fac.slug or fac.id))
+
+    manager_user_id = request.form.get('manager_user_id', type=int)
+    if not manager_user_id:
+        flash('Facility manager is required.', 'error')
+        return redirect(url_for('view_facility_for_lab', lab_slug=lab.slug or lab.id, facility_slug=fac.slug or fac.id))
+    member = DatabaseMember.query.filter_by(database_id=lab.id, user_id=manager_user_id).first()
+    if not member or member.role not in ('owner', 'admin'):
+        flash('Facility manager must be an owner or manager.', 'error')
+        return redirect(url_for('view_facility_for_lab', lab_slug=lab.slug or lab.id, facility_slug=fac.slug or fac.id))
+
+    state = (request.form.get('state') or '').strip()
+    if not state:
+        state = (request.form.get('state_text') or '').strip()
+
+    fac.name = name
+    fac.location = (request.form.get('location') or '').strip()
+    fac.address_line1 = (request.form.get('address_line1') or '').strip()
+    fac.address_line2 = (request.form.get('address_line2') or '').strip()
+    fac.city = (request.form.get('city') or '').strip()
+    fac.state = state
+    fac.postal_code = (request.form.get('postal_code') or '').strip()
+    fac.country = (request.form.get('country') or '').strip()
+    fac.description = (request.form.get('description') or '').strip()
+    fac.manager_user_id = manager_user_id
+
+    new_slug = generate_facility_slug(name, lab.id, exclude_id=fac.id)
+    fac.slug = new_slug
+
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        flash('Failed to update facility.', 'error')
+        return redirect(url_for('view_facility_for_lab', lab_slug=lab.slug or lab.id, facility_slug=fac.slug or fac.id))
+
+    flash('Facility updated.', 'ok')
+    return redirect(url_for('view_facility_for_lab', lab_slug=lab.slug or lab.id, facility_slug=fac.slug or fac.id))
+
+
+@app.route('/lab/<lab_slug>/facilities/<facility_slug>/delete', methods=['POST'])
+def delete_facility_for_lab(lab_slug, facility_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    role = db_role(current_user, lab.id)
+    if role not in ('owner', 'admin'):
+        abort(403)
+
+    fac = Facility.query.filter_by(database_id=lab.id, slug=facility_slug).first()
+    if not fac and facility_slug.isdigit():
+        fac = Facility.query.get(int(facility_slug))
+        if not fac or fac.database_id != lab.id:
+            fac = None
+    if not fac:
+        abort(404)
+
+    try:
+        db.session.delete(fac)
+        db.session.commit()
+        flash('Facility deleted.', 'ok')
+    except Exception:
+        db.session.rollback()
+        flash('Failed to delete facility.', 'error')
+
+    return redirect(url_for('list_facilities_for_lab', lab_slug=lab.slug or lab.id))
+
+
+@app.route('/facilities/create', methods=['POST'])
+def create_facility():
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('create_facility_for_lab', lab_slug=slug))
+    flash('Select a lab before creating facilities.', 'error')
+    return redirect(url_for('index'))
+
+
+@app.route('/lab/<lab_slug>/facilities/create', methods=['POST'])
+def create_facility_for_lab(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    role = db_role(current_user, lab.id)
+    if role not in ('owner', 'admin'):
+        abort(403)
+
+    name = (request.form.get('name') or '').strip()
+    if not name:
+        flash('Facility name is required.', 'error')
+        return redirect(url_for('view_lab_by_slug', slug=lab.slug) if lab.slug else url_for('view_lab', db_id=lab.id))
+
+    manager_user_id = request.form.get('manager_user_id', type=int)
+    if not manager_user_id:
+        flash('Facility manager is required.', 'error')
+        return redirect(url_for('view_lab_by_slug', slug=lab.slug) if lab.slug else url_for('view_lab', db_id=lab.id))
+    member = DatabaseMember.query.filter_by(database_id=lab.id, user_id=manager_user_id).first()
+    if not member or member.role not in ('owner', 'admin'):
+        flash('Facility manager must be an owner or manager.', 'error')
+        return redirect(url_for('view_lab_by_slug', slug=lab.slug) if lab.slug else url_for('view_lab', db_id=lab.id))
+
+    state = (request.form.get('state') or '').strip()
+    if not state:
+        state = (request.form.get('state_text') or '').strip()
+
+    slug = generate_facility_slug(name, lab.id)
+
+    fac = Facility(
+        name=name,
+        slug=slug,
+        location=(request.form.get('location') or '').strip(),
+        address_line1=(request.form.get('address_line1') or '').strip(),
+        address_line2=(request.form.get('address_line2') or '').strip(),
+        city=(request.form.get('city') or '').strip(),
+        state=state,
+        postal_code=(request.form.get('postal_code') or '').strip(),
+        country=(request.form.get('country') or '').strip(),
+        description=(request.form.get('description') or '').strip(),
+        manager_user_id=manager_user_id,
+        database_id=lab.id,
+    )
+    db.session.add(fac)
+    db.session.commit()
+    flash('Facility created.', 'ok')
+    return redirect(url_for('list_facilities_for_lab', lab_slug=lab.slug))
+
+
+@app.route('/equipment/create', methods=['POST'])
+def create_equipment():
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('create_equipment_for_lab', lab_slug=slug))
+    flash('Select a lab before creating equipment.', 'error')
+    return redirect(url_for('index'))
+
+
+@app.route('/lab/<lab_slug>/equipment/create', methods=['POST'])
+def create_equipment_for_lab(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    role = db_role(current_user, lab.id)
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+
+    name = (request.form.get('name') or '').strip()
+    if not name:
+        flash('Equipment name is required.', 'error')
+        return redirect(url_for('list_equipment_for_lab', lab_slug=lab.slug))
+
+    purchase_date = None
+    purchase_raw = (request.form.get('purchase_date') or '').strip()
+    if purchase_raw:
+        try:
+            purchase_date = datetime.fromisoformat(purchase_raw).date()
+        except Exception:
+            purchase_date = None
+
+    eq = Equipment(
+        name=name,
+        model=(request.form.get('model') or '').strip(),
+        serial_number=(request.form.get('serial_number') or '').strip(),
+        location=(request.form.get('location') or '').strip(),
+        manufacturer=(request.form.get('manufacturer') or '').strip(),
+        purchase_date=purchase_date,
+        status=(request.form.get('status') or 'active').strip(),
+        database_id=lab.id,
+    )
+    db.session.add(eq)
+    db.session.commit()
+    log_lab_event(lab, 'created', 'equipment', eq.id, eq.name)
+    flash('Equipment created.', 'ok')
+    return redirect(url_for('list_equipment_for_lab', lab_slug=lab.slug))
+
+
+@app.route('/lab/<lab_slug>/equipment/<int:equipment_id>/edit', methods=['POST'])
+def edit_equipment_for_lab(lab_slug, equipment_id):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    role = db_role(current_user, lab.id)
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+
+    eq = Equipment.query.get_or_404(equipment_id)
+    if eq.database_id != lab.id:
+        abort(403)
+
+    eq.name = (request.form.get('name') or '').strip() or eq.name
+    eq.model = (request.form.get('model') or '').strip()
+    eq.serial_number = (request.form.get('serial_number') or '').strip()
+    eq.location = (request.form.get('location') or '').strip()
+    eq.manufacturer = (request.form.get('manufacturer') or '').strip()
+    status = (request.form.get('status') or '').strip()
+    if status:
+        eq.status = status
+    purchase_raw = (request.form.get('purchase_date') or '').strip()
+    if purchase_raw:
+        try:
+            eq.purchase_date = datetime.fromisoformat(purchase_raw).date()
+        except Exception:
+            pass
+
+    db.session.commit()
+    flash('Equipment updated.', 'ok')
+    return redirect(url_for('list_equipment_for_lab', lab_slug=lab.slug))
 
 
 @app.route('/sample-classes/create', methods=['POST'])
 def create_sample_class():
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('create_sample_class_for_lab', lab_slug=slug))
+    flash('Select a lab before creating sample classes.', 'error')
+    return redirect(url_for('index'))
+
+
+@app.route('/lab/<lab_slug>/sample-classes/create', methods=['POST'])
+def create_sample_class_for_lab(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
     name = (request.form.get('name') or '').strip()
     description = (request.form.get('description') or '').strip()
     slug = (request.form.get('slug') or '').strip()
     attrs_raw = (request.form.get('attributes') or '').strip()
     if not name:
         flash('Sample class name is required.', 'error')
-        return redirect(url_for('list_samples'))
+        return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug))
 
     if not slug:
         slug = re.sub('[^0-9a-z]+', '_', name.lower())
@@ -1807,17 +3504,80 @@ def create_sample_class():
             raise ValueError('attributes must be a JSON array')
     except Exception as e:
         flash('Invalid attributes JSON: ' + str(e), 'error')
-        return redirect(url_for('list_samples'))
+        return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug))
 
-    sc = SampleClass(name=name, slug=slug, description=description, attributes_json=json.dumps(attrs))
+    sc = SampleClass(name=name, slug=slug, description=description, attributes_json=json.dumps(attrs), database_id=lab.id)
     db.session.add(sc)
     db.session.commit()
     flash('Sample class created.', 'ok')
-    return redirect(url_for('list_samples'))
+    return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug))
+
+
+@app.route('/lab/<lab_slug>/sample-classes/<int:class_id>/update', methods=['POST'])
+def update_sample_class_for_lab(lab_slug, class_id):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    role = db_role(current_user, lab.id)
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+
+    sc = SampleClass.query.get_or_404(class_id)
+    if sc.database_id != lab.id:
+        abort(403)
+
+    name = (request.form.get('name') or '').strip()
+    description = (request.form.get('description') or '').strip()
+    slug = (request.form.get('slug') or '').strip()
+    if not name:
+        flash('Sample class name is required.', 'error')
+        return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug))
+
+    if not slug:
+        slug = re.sub('[^0-9a-z]+', '_', name.lower())
+    if re.search(r'[^0-9a-z_]', slug):
+        flash('Slug must use lowercase letters, numbers, or underscores.', 'error')
+        return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug))
+
+    existing = SampleClass.query.filter(
+        SampleClass.database_id == lab.id,
+        SampleClass.slug == slug,
+        SampleClass.id != sc.id
+    ).first()
+    if existing:
+        flash('That slug is already used by another sample class.', 'error')
+        return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug))
+
+    attrs_raw = (request.form.get('attributes') or '').strip()
+    try:
+        attrs = json.loads(attrs_raw) if attrs_raw else []
+        if not isinstance(attrs, list):
+            raise ValueError('attributes must be a JSON array')
+    except Exception as e:
+        flash('Invalid attributes JSON: ' + str(e), 'error')
+        return redirect(url_for('list_stock_materials_for_lab', lab_slug=lab.slug))
+
+    sc.attributes_json = json.dumps(attrs)
+    sc.name = name
+    sc.description = description
+    sc.slug = slug
+    db.session.commit()
+    flash('Sample class attributes updated.', 'ok')
+    return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug))
 
 
 @app.route("/samples/create", methods=["POST"])
 def create_sample():
+    slug = session.get('current_lab_slug')
+    if slug:
+        return redirect(url_for('create_sample_for_lab', lab_slug=slug))
+    flash('Select a lab before creating samples.', 'error')
+    return redirect(url_for('index'))
+
+
+@app.route("/lab/<lab_slug>/samples/create", methods=["POST"])
+def create_sample_for_lab(lab_slug):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
     parent_id = request.form.get("parent_id", type=int)
     project_id = request.form.get("project_id", type=int)
     name = (request.form.get("name") or "").strip()
@@ -1828,20 +3588,67 @@ def create_sample():
     link_notes = (request.form.get("notes") or "").strip()
 
     parent = Sample.query.get(parent_id) if parent_id else None
+    root = get_sample_root(parent) if parent else None
     if parent:
         project_id = parent.project_id
 
     if not project_id or not name:
         flash("Project (or parent) and sample name are required.", "error")
-        return redirect(url_for("list_samples"))
+        return redirect(url_for("list_samples_for_lab", lab_slug=lab.slug))
+
+    project = Project.query.get(project_id)
+    if not project or project.database_id != lab.id:
+        flash("Selected project does not belong to this lab.", "error")
+        return redirect(url_for("list_samples_for_lab", lab_slug=lab.slug))
+
+    # Determine stock material and sample class (inherited from stock material)
+    from_stock = (request.form.get('from_stock') or '').strip().lower() == 'yes'
+    stock_material_id = request.form.get('stock_material_id', type=int)
+    new_qty = request.form.get('stock_new_quantity', type=float)
+    sample_qty = request.form.get('sample_quantity', type=float)
+    if parent:
+        root = get_sample_root(parent)
+        stock_material_id = getattr(root, 'stock_material_id', None)
+        if not stock_material_id:
+            flash('Parent sample has no stock material to inherit.', 'error')
+            return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+    else:
+        if from_stock and not stock_material_id:
+            flash('Stock material is required when origin is stock.', 'error')
+            return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+
+    mat = StockMaterial.query.get(stock_material_id) if stock_material_id else None
+    if mat and mat.database_id != lab.id:
+        flash('Invalid stock material for this lab.', 'error')
+        return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+
+    if mat and mat.created_at:
+        if datetime.utcnow() < mat.created_at:
+            flash('Cannot create a sample before the stock material was received into inventory.', 'error')
+            return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+
+    if mat and from_stock and not parent:
+        if new_qty is None:
+            flash('New stock quantity is required when splitting from stock material.', 'error')
+            return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+        if sample_qty is None:
+            flash('Sample quantity is required when splitting from stock material.', 'error')
+            return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+
+    sample_class_id = root.sample_class_id if root and getattr(root, 'sample_class_id', None) else (mat.sample_class_id if mat else None)
 
     # Handle sample class attributes (lab-level classes)
-    sample_class_id = request.form.get('sample_class_id', type=int)
     class_attrs = []
     class_values = {}
-    if sample_class_id:
+    inherit_from_parent = bool(root and getattr(root, 'class_attrs_json', None))
+    inherit_from_stock = bool(mat and from_stock and not parent and getattr(mat, 'class_attrs_json', None))
+    if inherit_from_parent:
+        class_values = safe_json_loads(getattr(root, 'class_attrs_json', None), {})
+    elif inherit_from_stock:
+        class_values = safe_json_loads(getattr(mat, 'class_attrs_json', None), {})
+    elif sample_class_id:
         sc = SampleClass.query.get(sample_class_id)
-        if sc:
+        if sc and sc.database_id == lab.id:
             class_attrs = safe_json_loads(sc.attributes_json, [])
             # validate and collect values
             for a in class_attrs:
@@ -1852,8 +3659,11 @@ def create_sample():
                 val = (request.form.get(key) or '').strip()
                 if a.get('required') and not val:
                     flash(f"Missing required class attribute: {aname}", 'error')
-                    return redirect(url_for('list_samples', view=request.args.get('view', 'project')))
+                    return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
                 class_values[aname] = val
+        else:
+            flash('Invalid sample class for this lab.', 'error')
+            return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
 
     # validate dynamic attributes (your existing logic here) ...
     attrs = get_project_attrs(project_id)
@@ -1883,22 +3693,22 @@ def create_sample():
             values_to_save.append((a.id, val))
     if missing:
         flash("Missing required attributes: " + ", ".join(missing), "error")
-        return redirect(url_for("list_samples", view=request.args.get("view", "project")))
+        return redirect(url_for("list_samples_for_lab", lab_slug=lab.slug, view=request.args.get("view", "project")))
 
     # create the sample
     sample = Sample(project_id=project_id, parent_id=(
         parent.id if parent else None), name=name, creator_id=_uid())
     # handle stock material: only allow setting on root samples
-    stock_material_id = request.form.get('stock_material_id', type=int)
     if parent:
-        # inherit from root parent
         root = get_sample_root(parent)
         sample.stock_material_id = getattr(root, 'stock_material_id', None)
     else:
-        sample.stock_material_id = stock_material_id if stock_material_id else None
+        sample.stock_material_id = stock_material_id
 
     db.session.add(sample)
     db.session.commit()
+
+    log_lab_event(lab, "created", "sample", sample.id, sample.name, {"project_id": project_id})
 
     # persist attribute values
     for attr_id, val in values_to_save:
@@ -1920,6 +3730,36 @@ def create_sample():
         # If this is a root sample and it has a stock_material assigned, cascade to descendants (none yet),
         # but keep helper for future edits where changing root cascades.
 
+    # update stock quantity and log if split from stock
+    if mat and from_stock and not parent:
+        before_qty = mat.quantity
+        mat.quantity = new_qty
+        delta = (new_qty - before_qty) if (before_qty is not None and new_qty is not None) else None
+        proj_name = None
+        try:
+            proj_name = sample.project.title
+        except Exception:
+            proj_name = None
+        unit = mat.unit or ''
+        loss = None
+        if before_qty is not None and new_qty is not None and sample_qty is not None:
+            loss = before_qty - (new_qty + sample_qty)
+        parts = [f"{proj_name} · {sample.name}" if proj_name else f"{sample.name}"]
+        if sample_qty is not None:
+            parts.append(f"Sample qty: {sample_qty}{(' ' + unit) if unit else ''}")
+        if loss is not None:
+            parts.append(f"Losses: {loss}{(' ' + unit) if unit else ''}")
+        note = " · ".join(parts)
+        db.session.add(StockMaterialQuantityLog(
+            stock_material_id=mat.id,
+            sample_id=sample.id,
+            quantity_before=before_qty,
+            quantity_after=new_qty,
+            delta=delta,
+            note=note
+        ))
+        db.session.commit()
+
     # NEW: link to experiment + all ancestors (enforce same-project)
     if experiment_id:
         exp = Experiment.query.get_or_404(experiment_id)
@@ -1934,54 +3774,6 @@ def create_sample():
     return redirect(url_for("view_sample", sample_id=sample.id))
 
 
-@app.get("/public/sample/<int:sample_id>")
-def view_sample_public(sample_id):
-    sample = Sample.query.get_or_404(sample_id)
-
-    # lineage & tree
-    lineage = get_sample_lineage(sample)
-    family_tree = serialize_sample_tree(get_sample_root(sample), sample.id)
-
-    # attributes (read-only)
-    attrs = get_project_attrs(sample.project_id)
-    val_by_attr = {v.attribute_id: v for v in sample.attribute_values}
-    attr_defs = []
-    for a in attrs:
-        v = val_by_attr.get(a.id)
-        attr_defs.append({
-            "id": a.id,
-            "name": a.name,
-            "unit": getattr(a, "unit", None),  # safe if unit column exists
-            "value": (v.value if v and v.value else None),
-        })
-
-    # whether to allow file downloads to unauthenticated users
-    public_downloads = bool(app.config.get("PUBLIC_DOWNLOADS", False))
-
-    return render_template(
-        "sample_public.html",
-        sample=sample,
-        lineage=lineage,
-        family_tree=family_tree,
-        attr_defs=attr_defs,
-        public_downloads=public_downloads,
-    )
-
-
-@app.get("/s/<int:sample_id>")
-def view_sample_public_short(sample_id):
-    return view_sample_public(sample_id)
-
-
-@app.route("/sample/<int:sample_id>/qr")
-def sample_qr(sample_id):
-    sample = Sample.query.get_or_404(sample_id)
-    url = url_for("view_sample_public", sample_id=sample.id, _external=True)
-    img = qrcode.make(url)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return send_file(buf, mimetype="image/png")
 
 
 @app.route("/sample/<int:sample_id>/split", methods=["POST"])
@@ -1999,11 +3791,16 @@ def split_sample(sample_id):
     missing = []
     values = {}
 
+    root = get_sample_root(parent)
     for a in attrs:
         key = f"attr_{a.id}"
-        val = (request.form.get(key) or "").strip()
-        if a.required and not val:
-            missing.append(a.name)
+        if getattr(a, 'inherited', False):
+            pav = SampleAttributeValue.query.filter_by(sample_id=root.id, attribute_id=a.id).first()
+            val = pav.value if pav else ""
+        else:
+            val = (request.form.get(key) or "").strip()
+            if a.required and not val:
+                missing.append(a.name)
         values[a.id] = val
 
     if missing:
@@ -2032,8 +3829,22 @@ def split_sample(sample_id):
 
 
 @app.route("/sample/<int:sample_id>")
-def view_sample(sample_id):
+@app.route("/lab/<lab_slug>/sample/<int:sample_id>")
+@app.route("/lab/<lab_slug>/project/<int:project_id>/sample/<int:sample_id>")
+def view_sample(sample_id, lab_slug=None, project_id=None):
     sample = Sample.query.get_or_404(sample_id)
+    project = sample.project
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if not project or project.database_id != lab.id:
+            abort(403)
+        if project_id and project.id != project_id:
+            abort(404)
+        set_current_lab(lab)
+    else:
+        if project and project.database:
+            lab_key = project.database.slug or str(project.database.id)
+            return redirect(url_for('view_sample', lab_slug=lab_key, project_id=project.id, sample_id=sample.id))
     exp_choices = Experiment.query.filter_by(
         project_id=sample.project_id).order_by(Experiment.created_at.desc()).all()
 
@@ -2058,6 +3869,7 @@ def view_sample(sample_id):
             "name": a.name,
             "field_type": a.field_type,
             "required": bool(a.required),
+            "inherited": bool(getattr(a, 'inherited', False)),
             "choices": safe_json_loads(a.choices_json, []),
             "value": value,
             "is_placeholder": placeholder,
@@ -2072,14 +3884,193 @@ def view_sample(sample_id):
         family_tree=serialize_sample_tree(get_sample_root(sample), sample.id),
         attr_defs=attr_defs,
         needs_update=needs_update,
-        stock_materials=StockMaterial.query.order_by(StockMaterial.name.asc()).all(),
+        stock_materials=StockMaterial.query.filter_by(database_id=sample.project.database_id).order_by(StockMaterial.name.asc()).all(),
+        current_lab=sample.project.database,
     )
 
 
 @app.route('/stock/<int:stock_id>')
-def view_stock_material(stock_id):
+@app.route('/lab/<lab_slug>/stock/<int:stock_id>')
+def view_stock_material(stock_id, lab_slug=None):
     mat = StockMaterial.query.get_or_404(stock_id)
-    return render_template('stock_material.html', mat=mat)
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if mat.database_id != lab.id:
+            abort(403)
+        set_current_lab(lab)
+    else:
+        if mat.database:
+            lab_key = mat.database.slug or str(mat.database.id)
+            return redirect(url_for('view_stock_material', lab_slug=lab_key, stock_id=mat.id))
+    class_attrs = safe_json_loads(getattr(mat, 'class_attrs_json', None), {})
+    class_attr_defs = []
+    if getattr(mat, 'sample_class', None) and getattr(mat.sample_class, 'attributes_json', None):
+        class_attr_defs = safe_json_loads(mat.sample_class.attributes_json, [])
+        for a in class_attr_defs:
+            aname = a.get('name') if isinstance(a, dict) else None
+            slug = re.sub('[^0-9a-z]+', '_', (aname or '').lower())
+            if isinstance(a, dict):
+                a['form_key'] = f"sc_{slug}"
+    lab_role = db_role(current_user, mat.database_id) if mat.database_id else None
+    quantity_logs = StockMaterialQuantityLog.query.filter_by(stock_material_id=mat.id).order_by(StockMaterialQuantityLog.created_at.desc()).all()
+    return render_template(
+        'stock_material.html',
+        mat=mat,
+        current_lab=getattr(mat, 'database', None),
+        class_attrs=class_attrs,
+        class_attr_defs=class_attr_defs,
+        lab_role=lab_role,
+        quantity_logs=quantity_logs,
+    )
+
+
+@app.route('/stock/<int:stock_id>/timeline')
+@app.route('/lab/<lab_slug>/stock/<int:stock_id>/timeline')
+def stock_material_timeline(stock_id, lab_slug=None):
+    mat = StockMaterial.query.get_or_404(stock_id)
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if mat.database_id != lab.id:
+            abort(403)
+        set_current_lab(lab)
+    else:
+        if mat.database:
+            lab_key = mat.database.slug or str(mat.database.id)
+            return redirect(url_for('stock_material_timeline', lab_slug=lab_key, stock_id=mat.id))
+
+    events = []
+    if mat.created_at:
+        events.append({
+            'type': 'received',
+            'timestamp': mat.created_at.isoformat(),
+            'title': 'Received into inventory',
+            'id': mat.id,
+            'url': url_for('view_stock_material', lab_slug=lab.slug, stock_id=mat.id) if lab_slug else url_for('view_stock_material', stock_id=mat.id)
+        })
+
+    samples = Sample.query.filter_by(stock_material_id=mat.id).all()
+    for s in samples:
+        if s.created_at:
+            events.append({
+                'type': 'sample_created',
+                'timestamp': s.created_at.isoformat(),
+                'title': s.name,
+                'id': s.id,
+                'url': url_for('view_sample', lab_slug=lab.slug, project_id=s.project_id, sample_id=s.id) if lab_slug else url_for('view_sample', sample_id=s.id)
+            })
+
+    grouped = {}
+    for ev in events:
+        ts = ev.get('timestamp') or ''
+        key = ts[:7] if ts else 'unknown'
+        grouped.setdefault(key, []).append(ev)
+
+    for k in grouped:
+        grouped[k].sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+    return jsonify(grouped)
+
+
+@app.post('/stock/<int:stock_id>/edit')
+@app.post('/lab/<lab_slug>/stock/<int:stock_id>/edit')
+@login_required
+def edit_stock_material(stock_id, lab_slug=None):
+    mat = StockMaterial.query.get_or_404(stock_id)
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if mat.database_id != lab.id:
+            abort(403)
+        set_current_lab(lab)
+
+    role = db_role(current_user, mat.database_id) if mat.database_id else None
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+
+    mat.name = (request.form.get('name') or '').strip() or mat.name
+    mat.description = (request.form.get('description') or '').strip()
+    mat.lot_number = (request.form.get('lot_number') or '').strip()
+    mat.quantity = request.form.get('quantity', type=float)
+    if role in ('owner', 'admin'):
+        mat.original_quantity = request.form.get('original_quantity', type=float)
+    mat.unit = (request.form.get('unit') or '').strip()
+    mat.location = (request.form.get('location') or '').strip()
+    mat.manufacturer = (request.form.get('manufacturer') or '').strip()
+
+    # update class attributes if class defined
+    class_values = {}
+    if getattr(mat, 'sample_class', None) and getattr(mat.sample_class, 'attributes_json', None):
+        attrs = safe_json_loads(mat.sample_class.attributes_json, [])
+        for a in attrs:
+            aname = a.get('name')
+            slug = re.sub('[^0-9a-z]+', '_', (aname or '').lower())
+            key = f'sc_{slug}'
+            val = (request.form.get(key) or '').strip()
+            if a.get('required') and not val:
+                flash(f"Missing required class attribute: {aname}", 'error')
+                return redirect(url_for('view_stock_material', stock_id=mat.id))
+            class_values[aname] = val
+        mat.class_attrs_json = json.dumps(class_values) if class_values else None
+
+    db.session.commit()
+    flash('Stock material updated.', 'ok')
+    return redirect(url_for('view_stock_material', stock_id=mat.id))
+
+
+@app.route('/stock/<int:stock_id>/upload', methods=['POST'])
+@app.route('/lab/<lab_slug>/stock/<int:stock_id>/upload', methods=['POST'])
+@login_required
+def upload_stock_material_doc(stock_id, lab_slug=None):
+    mat = StockMaterial.query.get_or_404(stock_id)
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if mat.database_id != lab.id:
+            abort(403)
+        set_current_lab(lab)
+
+    role = db_role(current_user, mat.database_id) if mat.database_id else None
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+
+    file = request.files.get('file')
+    if not file or file.filename == '':
+        flash('No file selected.', 'error')
+        return redirect(url_for('view_stock_material', stock_id=mat.id))
+    if not allowed_file(file.filename):
+        flash('File type not allowed.', 'error')
+        return redirect(url_for('view_stock_material', stock_id=mat.id))
+
+    safe_name = secure_filename(file.filename)
+    folder = stock_material_upload_dir(mat.id)
+    stored_path = os.path.join(folder, safe_name)
+    base, ext = os.path.splitext(safe_name)
+    i = 1
+    while os.path.exists(stored_path):
+        safe_name = f"{base}({i}){ext}"
+        stored_path = os.path.join(folder, safe_name)
+        i += 1
+
+    file.save(stored_path)
+    doc = StockMaterialDocument(
+        stock_material_id=mat.id,
+        filename=file.filename,
+        stored_path=stored_path,
+        mimetype=file.mimetype,
+    )
+    db.session.add(doc)
+    db.session.commit()
+    flash('Document uploaded.', 'ok')
+    return redirect(url_for('view_stock_material', stock_id=mat.id))
+
+
+@app.route('/stock/doc/<int:doc_id>/download')
+def download_stock_material_doc(doc_id):
+    d = StockMaterialDocument.query.get_or_404(doc_id)
+    return send_from_directory(
+        os.path.dirname(d.stored_path),
+        os.path.basename(d.stored_path),
+        as_attachment=True,
+        download_name=d.filename,
+    )
 
 
 @app.context_processor
@@ -2089,6 +4080,18 @@ def inject_global_counts():
         "samples": Sample.query.count(),
         "experiments": Experiment.query.count(),
     })
+
+
+@app.context_processor
+def lab_url_helpers():
+    def lab_link(lab):
+        if not lab:
+            return '#'
+        if getattr(lab, 'slug', None):
+            return url_for('view_lab_by_slug', slug=lab.slug)
+        return url_for('view_lab', db_id=lab.id)
+
+    return dict(lab_link=lab_link)
 
 
 @app.route("/sample/<int:sample_id>/link", methods=["POST"])
@@ -2325,11 +4328,15 @@ def edit_sample(sample_id):
     missing_required = []
     for a in attrs:
         key = f"attr_{a.id}"
-        val = (request.form.get(key) or "").strip()
-
-        if a.required and not val:
-            missing_required.append(a.name)
-            continue
+        if getattr(a, 'inherited', False) and sample.parent_id:
+            root = get_sample_root(sample)
+            pav = SampleAttributeValue.query.filter_by(sample_id=root.id, attribute_id=a.id).first()
+            val = pav.value if pav else ""
+        else:
+            val = (request.form.get(key) or "").strip()
+            if a.required and not val:
+                missing_required.append(a.name)
+                continue
 
         row = existing.get(a.id)
         if row:
@@ -2350,6 +4357,54 @@ def edit_sample(sample_id):
     db.session.commit()
     flash("Sample updated.", "ok")
     return redirect(url_for("view_sample", sample_id=sample.id))
+
+
+@app.route("/sample/<int:sample_id>/qr")
+@login_required
+def sample_qr(sample_id):
+    sample = Sample.query.get_or_404(sample_id)
+    if sample.project and sample.project.database:
+        lab_key = sample.project.database.slug or str(sample.project.database.id)
+        url = url_for("view_sample", lab_slug=lab_key, project_id=sample.project.id, sample_id=sample.id, _external=True)
+    else:
+        url = url_for("view_sample", sample_id=sample.id, _external=True)
+    img = qrcode.make(url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return send_file(buf, mimetype="image/png")
+
+
+@app.route("/stock/<int:stock_id>/qr")
+@login_required
+def stock_qr(stock_id):
+    mat = StockMaterial.query.get_or_404(stock_id)
+    if mat.database:
+        lab_key = mat.database.slug or str(mat.database.id)
+        url = url_for("view_stock_material", lab_slug=lab_key, stock_id=mat.id, _external=True)
+    else:
+        url = url_for("view_stock_material", stock_id=mat.id, _external=True)
+    img = qrcode.make(url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return send_file(buf, mimetype="image/png")
+
+
+@app.route("/equipment/<int:equipment_id>/qr")
+@login_required
+def equipment_qr(equipment_id):
+    eq = Equipment.query.get_or_404(equipment_id)
+    if eq.database:
+        lab_key = eq.database.slug or str(eq.database.id)
+        url = url_for("list_equipment_for_lab", lab_slug=lab_key, _external=True)
+    else:
+        url = url_for("list_equipment", _external=True)
+    img = qrcode.make(url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return send_file(buf, mimetype="image/png")
 
 
 # --- Bootstrap DB on first run ---
@@ -2377,6 +4432,7 @@ with app.app_context():
     # Project
     add_column_if_missing("project", "pi_user_id",    "pi_user_id INTEGER")
     add_column_if_missing("project", "database_id",   "database_id INTEGER")
+    add_column_if_missing("project", "slug",          "slug VARCHAR(160)")
     # Sample: ensure newly-added class-related columns exist for older DBs
     add_column_if_missing("sample", "sample_class_id", "sample_class_id INTEGER")
     add_column_if_missing("sample", "project_class_id", "project_class_id INTEGER")
@@ -2398,6 +4454,23 @@ with app.app_context():
     add_column_if_missing("equipment", "project_id", "project_id INTEGER")
     # Stock material sample class linking
     add_column_if_missing("stock_material", "sample_class_id", "sample_class_id INTEGER")
+    add_column_if_missing("stock_material", "original_quantity", "original_quantity FLOAT")
+    add_column_if_missing("database", "time_zone", "time_zone VARCHAR(64)")
+    add_column_if_missing("database", "role_badge_owner", "role_badge_owner VARCHAR(32)")
+    add_column_if_missing("database", "role_badge_admin", "role_badge_admin VARCHAR(32)")
+    add_column_if_missing("database", "role_badge_editor", "role_badge_editor VARCHAR(32)")
+    add_column_if_missing("database", "role_badge_viewer", "role_badge_viewer VARCHAR(32)")
+    add_column_if_missing("facility", "manager_user_id", "manager_user_id INTEGER")
+    add_column_if_missing("facility", "address_line1", "address_line1 VARCHAR(200)")
+    add_column_if_missing("facility", "address_line2", "address_line2 VARCHAR(200)")
+    add_column_if_missing("facility", "city", "city VARCHAR(120)")
+    add_column_if_missing("facility", "state", "state VARCHAR(120)")
+    add_column_if_missing("facility", "postal_code", "postal_code VARCHAR(40)")
+    add_column_if_missing("facility", "country", "country VARCHAR(120)")
+    add_column_if_missing("user", "title", "title VARCHAR(120)")
+    add_column_if_missing("user", "phone", "phone VARCHAR(64)")
+    add_column_if_missing("user", "organization", "organization VARCHAR(160)")
+    add_column_if_missing("user", "bio", "bio TEXT")
 
     # Attributes / values
     add_column_if_missing("project_sample_attribute", "unit", "unit TEXT")

@@ -1,23 +1,349 @@
 {% extends "base.html" %}
 {% block content %}
 
-<p class="mb-3"><a href="{{ url_for('index') }}">&larr; Back</a></p>
-
-<h2>{{ mat.name }}</h2>
-<div class="text-muted mb-3">Created {{ mat.created_at.strftime('%Y-%m-%d') }}</div>
+<div class="mb-3">
+  <a class="btn btn-primary" href="{{ url_for('list_stock_materials_for_lab', lab_slug=(current_lab.slug or current_lab.id)) if current_lab is defined and current_lab else url_for('index') }}">Stock Inventory</a>
+</div>
 
 <div class="card card-body mb-3">
-  <dl class="row mb-0">
-    <dt class="col-3">Lot</dt><dd class="col-9">{{ mat.lot_number or '—' }}</dd>
-    <dt class="col-3">Quantity</dt><dd class="col-9">{{ mat.quantity or '—' }} {{ mat.unit or '' }}</dd>
-    <dt class="col-3">Location</dt><dd class="col-9">{{ mat.location or '—' }}</dd>
-    <dt class="col-3">Manufacturer</dt><dd class="col-9">{{ mat.manufacturer or '—' }}</dd>
-  </dl>
+  <div class="d-flex justify-content-between align-items-start mb-2">
+    <div>
+      <h2 class="mb-1">{{ mat.name }}</h2>
+      <div class="text-muted">Created {{ mat.created_at.strftime('%Y-%m-%d') }}</div>
+    </div>
+    <div class="text-center" style="max-width:200px;">
+      <div class="fw-semibold small mb-1">QR Code</div>
+      <img src="{{ url_for('stock_qr', stock_id=mat.id) }}"
+           alt="QR for {{ mat.name }}"
+           class="img-fluid"
+           style="max-width:180px;">
+      <div class="form-text">Scan to open this stock material.</div>
+    </div>
+  </div>
+  {% if lab_role in ['owner','admin','editor'] %}
+    <form method="post" action="{{ url_for('edit_stock_material', lab_slug=(current_lab.slug or current_lab.id), stock_id=mat.id) }}">
+      <div class="row g-2">
+        <div class="col-md-6">
+          <label class="form-label">Name</label>
+          <input class="form-control" name="name" value="{{ mat.name }}" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Lot</label>
+          <input class="form-control" name="lot_number" value="{{ mat.lot_number or '' }}">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Quantity</label>
+          <input class="form-control" name="quantity" type="number" step="any" value="{{ mat.quantity or '' }}">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Original Quantity</label>
+          <input class="form-control" name="original_quantity" type="number" step="any" value="{{ mat.original_quantity if mat.original_quantity is not none else '' }}" {% if lab_role not in ['owner','admin'] %}readonly{% endif %}>
+          {% if lab_role not in ['owner','admin'] %}<div class="form-text">Admin only.</div>{% endif %}
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Unit</label>
+          <input class="form-control" name="unit" value="{{ mat.unit or '' }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Location</label>
+          <input class="form-control" name="location" value="{{ mat.location or '' }}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Manufacturer</label>
+          <input class="form-control" name="manufacturer" value="{{ mat.manufacturer or '' }}">
+        </div>
+        <div class="col-md-12">
+          <label class="form-label">Description</label>
+          <textarea class="form-control" name="description" rows="3">{{ mat.description or '' }}</textarea>
+        </div>
+      </div>
+
+      {% if class_attr_defs and class_attr_defs|length %}
+        <hr>
+        <h6 class="mb-2">Class Attributes</h6>
+        <div class="row g-2">
+          {% for a in class_attr_defs %}
+            {% set key = a.form_key %}
+            <div class="col-md-6">
+              <label class="form-label">{{ a.name }}{% if a.unit %} ({{ a.unit }}){% endif %}{% if a.required %} *{% endif %}</label>
+              {% if a.field_type == 'select' %}
+                <select class="form-select" name="{{ key }}" {% if a.required %}required{% endif %}>
+                  {% if not a.required %}<option value="">(optional)</option>{% endif %}
+                  {% for opt in a.choices or [] %}
+                    <option value="{{ opt }}" {% if class_attrs and class_attrs.get(a.name) == opt %}selected{% endif %}>{{ opt }}</option>
+                  {% endfor %}
+                </select>
+              {% else %}
+                <input class="form-control" name="{{ key }}" value="{{ class_attrs.get(a.name) if class_attrs else '' }}" {% if a.required %}required{% endif %}>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      <div class="mt-3">
+        <button class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  {% else %}
+    <dl class="row mb-0">
+      <dt class="col-3">Lot</dt><dd class="col-9">{{ mat.lot_number or '—' }}</dd>
+      <dt class="col-3">Quantity</dt><dd class="col-9">{{ mat.quantity or '—' }} {{ mat.unit or '' }}</dd>
+      <dt class="col-3">Location</dt><dd class="col-9">{{ mat.location or '—' }}</dd>
+      <dt class="col-3">Manufacturer</dt><dd class="col-9">{{ mat.manufacturer or '—' }}</dd>
+    </dl>
+  {% endif %}
 </div>
 
-<div class="card card-body">
-  <h5 class="mb-2">Description</h5>
-  <div style="white-space:pre-wrap;">{{ mat.description or '—' }}</div>
+{% if class_attrs and (lab_role not in ['owner','admin','editor']) %}
+  <div class="card card-body mb-3">
+    <h5 class="mb-2">Class Attributes</h5>
+    <dl class="row mb-0">
+      {% for k, v in class_attrs.items() %}
+        <dt class="col-3">{{ k }}</dt><dd class="col-9">{{ v or '—' }}</dd>
+      {% endfor %}
+    </dl>
+  </div>
+{% endif %}
+
+<div class="card card-body mb-3">
+  <h5 class="mb-2">Documents</h5>
+  {% if mat.documents and mat.documents|length %}
+    <ul class="list-group mb-3">
+      {% for d in mat.documents %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <a href="{{ url_for('download_stock_material_doc', doc_id=d.id) }}">{{ d.filename }}</a>
+          <small class="text-muted">{{ d.uploaded_at.strftime('%Y-%m-%d') if d.uploaded_at else '' }}</small>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="text-muted">No documents yet.</p>
+  {% endif %}
+
+  {% if lab_role in ['owner','admin','editor'] %}
+    <form method="post" action="{{ url_for('upload_stock_material_doc', lab_slug=(current_lab.slug or current_lab.id), stock_id=mat.id) }}" enctype="multipart/form-data">
+      <div class="input-group">
+        <input type="file" class="form-control" name="file" required>
+        <button class="btn btn-primary">Upload</button>
+      </div>
+    </form>
+  {% endif %}
 </div>
+
+<div class="card card-body mb-3">
+  <h5 class="mb-2">Quantity Log</h5>
+  {% if quantity_logs and quantity_logs|length %}
+    <ul class="list-group">
+      {% for q in quantity_logs %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <div>
+            <div class="fw-semibold d-flex align-items-center gap-2">
+              {{ q.created_at|lab_date }}
+              {% if q.note and 'Received into inventory' in q.note %}
+                <span class="badge text-bg-success">Received into Inventory</span>
+              {% endif %}
+            </div>
+            <div class="small text-muted">
+              {% if q.delta is not none %}Δ {{ '%.3f'|format(q.delta) }}{% else %}Δ —{% endif %}
+              · Before: {{ q.quantity_before if q.quantity_before is not none else '—' }}
+              · After: {{ q.quantity_after if q.quantity_after is not none else '—' }}
+            </div>
+            {% if q.note and 'Received into inventory' not in q.note %}
+              <div class="small">{{ q.note }}</div>
+            {% endif %}
+          </div>
+          {% if q.sample %}
+            <a class="btn btn-sm btn-primary" href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=q.sample.project_id, sample_id=q.sample_id) }}">View Sample</a>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="text-muted mb-0">No quantity changes logged yet.</p>
+  {% endif %}
+</div>
+
+{% if lab_role not in ['owner','admin','editor'] %}
+  <div class="card card-body">
+    <h5 class="mb-2">Description</h5>
+    <div style="white-space:pre-wrap;">{{ mat.description or '—' }}</div>
+  </div>
+{% endif %}
+
+<div class="card card-body mt-3">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h5 class="mb-0">Stock Material Timeline</h5>
+  </div>
+  <div id="stockTimelineContainer">
+    <p class="text-muted">Loading timeline…</p>
+  </div>
+</div>
+
+<script>
+(function(){
+  const labSlug = "{{ current_lab.slug or current_lab.id }}";
+  const apiBase = labSlug ? `/lab/${labSlug}` : '';
+  const stockId = {{ mat.id|tojson }};
+
+  function renderTimeline(data){
+    const container = document.getElementById('stockTimelineContainer');
+    container.innerHTML = '';
+    const months = Object.keys(data).sort().reverse();
+    if (!months.length){
+      container.innerHTML = '<p class="text-muted">No timeline events yet.</p>';
+      return;
+    }
+    if (!monthPicker.value) monthPicker.value = months[0];
+    monthPicker.min = months[months.length - 1];
+    monthPicker.max = months[0];
+
+    const m = monthPicker.value;
+    const [yearStr, monthStr] = m.split('-');
+    const year = Number(yearStr);
+    const monthIndex0 = Number(monthStr) - 1;
+
+    const box = document.createElement('div');
+    box.className = 'mb-3 border rounded p-2';
+    const h = document.createElement('h6');
+    h.textContent = new Date(Date.UTC(year, monthIndex0, 1)).toLocaleString(undefined, { month: 'long', year: 'numeric' });
+    box.appendChild(h);
+
+    const first = new Date(Date.UTC(year, monthIndex0, 1));
+    const last = new Date(Date.UTC(year, monthIndex0 + 1, 0));
+    const daysInMonth = last.getUTCDate();
+    const startDay = first.getUTCDay();
+
+    const eventsByDay = {};
+    (data[m] || []).forEach(ev => {
+      const dayKey = (ev.timestamp || '').slice(0, 10);
+      if (!eventsByDay[dayKey]) eventsByDay[dayKey] = [];
+      eventsByDay[dayKey].push(ev);
+    });
+
+    const table = document.createElement('table');
+    table.className = 'table table-sm table-bordered mb-0';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th class="text-center">Sun</th><th class="text-center">Mon</th><th class="text-center">Tue</th><th class="text-center">Wed</th><th class="text-center">Thu</th><th class="text-center">Fri</th><th class="text-center">Sat</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+
+    let day = 1 - startDay;
+    for (let week = 0; week < 6; week++){
+      const tr = document.createElement('tr');
+      for (let d = 0; d < 7; d++){
+        const td = document.createElement('td');
+        td.style.verticalAlign = 'top';
+        td.style.minWidth = '120px';
+        td.style.height = '90px';
+        if (day < 1 || day > daysInMonth){
+          td.className = 'bg-body-tertiary';
+          tr.appendChild(td);
+          day++;
+          continue;
+        }
+        const dayStr = String(day).padStart(2, '0');
+        const dateKey = `${m}-${dayStr}`;
+        const header = document.createElement('div');
+        header.className = 'fw-semibold small mb-1';
+        header.textContent = day;
+        td.appendChild(header);
+
+        const evs = eventsByDay[dateKey] || [];
+        evs.forEach(ev => {
+          const item = document.createElement('div');
+          item.className = 'small text-truncate';
+          const typeLabel = (ev.type || '').replace('_', ' ');
+          const label = `${(ev.timestamp || '').slice(11,16)} · ${typeLabel} · ${ev.title}`;
+          if (ev.url){
+            const a = document.createElement('a');
+            a.href = ev.url;
+            a.textContent = label;
+            item.appendChild(a);
+          } else {
+            item.textContent = label;
+          }
+          td.appendChild(item);
+        });
+
+        tr.appendChild(td);
+        day++;
+      }
+      tbody.appendChild(tr);
+      if (day > daysInMonth) break;
+    }
+
+    table.appendChild(tbody);
+    box.appendChild(table);
+    container.appendChild(box);
+  }
+
+  // month navigation controls
+  const navBar = document.createElement('div');
+  navBar.className = 'mb-2 d-flex flex-wrap align-items-center gap-2';
+  const btnPrev = document.createElement('button'); btnPrev.className='btn btn-sm btn-outline-secondary'; btnPrev.textContent='Prev';
+  const monthPicker = document.createElement('input');
+  monthPicker.type = 'month';
+  monthPicker.className = 'form-control form-control-sm';
+  monthPicker.style.maxWidth = '180px';
+  monthPicker.setAttribute('aria-label', 'Select month');
+  const btnNext = document.createElement('button'); btnNext.className='btn btn-sm btn-outline-secondary'; btnNext.textContent='Next';
+  navBar.appendChild(btnPrev); navBar.appendChild(monthPicker); navBar.appendChild(btnNext);
+  const containerWrap = document.getElementById('stockTimelineContainer');
+  containerWrap.parentNode.insertBefore(navBar, containerWrap);
+
+  function monthIndexValue(ym){
+    const parts = (ym || '').split('-');
+    if (parts.length !== 2) return null;
+    const y = Number(parts[0]);
+    const m = Number(parts[1]);
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
+    return y * 12 + (m - 1);
+  }
+
+  function addMonths(ym, delta){
+    const parts = (ym || '').split('-');
+    if (parts.length !== 2) return null;
+    let y = Number(parts[0]);
+    let m = Number(parts[1]);
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
+    m = m - 1 + delta;
+    y = y + Math.floor(m / 12);
+    m = (m % 12 + 12) % 12;
+    const mm = String(m + 1).padStart(2, '0');
+    return `${y}-${mm}`;
+  }
+
+  function stepMonth(delta){
+    const next = addMonths(monthPicker.value, delta);
+    if (!next) return;
+    const minIdx = monthIndexValue(monthPicker.min);
+    const maxIdx = monthIndexValue(monthPicker.max);
+    const nextIdx = monthIndexValue(next);
+    if (minIdx != null && nextIdx < minIdx) return;
+    if (maxIdx != null && nextIdx > maxIdx) return;
+    monthPicker.value = next;
+    renderTimeline(window._stock_tl_data || {});
+  }
+  btnPrev.addEventListener('click', ()=> stepMonth(-1));
+  btnNext.addEventListener('click', ()=> stepMonth(1));
+  monthPicker.addEventListener('change', ()=> renderTimeline(window._stock_tl_data || {}));
+  monthPicker.addEventListener('input', ()=> renderTimeline(window._stock_tl_data || {}));
+
+  async function loadTimeline(){
+    const url = `${apiBase}/stock/${stockId}/timeline`;
+    const res = await fetch(url);
+    if (res.ok){
+      const data = await res.json();
+      window._stock_tl_data = data;
+      renderTimeline(data);
+    } else {
+      document.getElementById('stockTimelineContainer').innerHTML = '<p class="text-danger">Failed to load timeline.</p>';
+    }
+  }
+
+  loadTimeline();
+})();
+</script>
 
 {% endblock %}

@@ -2,20 +2,24 @@
 {% block content %}
 
 <p class="mb-3">
-  <a href="{{ url_for('view_project', project_id=experiment.project.id) }}">&larr; Back to project</a>
+  <a href="{{ url_for('view_project', lab_slug=(current_lab.slug or current_lab.id), project_id=experiment.project.id) }}">&larr; Back to project</a>
 </p>
 
 <!-- Header -->
 <div class="text-muted mb-2">
   Created {{ experiment.created_at.strftime('%Y-%m-%d') }}
-  {% if experiment.creator %}by {{ experiment.creator.name or experiment.creator.email }}{% endif %}
+  {% if experiment.creator %}
+    {% set creator_role = role_for_user(experiment.creator.id) %}
+    by <a href="{{ url_for('view_profile', user_id=experiment.creator.id) }}">{{ experiment.creator.name or experiment.creator.email }}</a>
+    {% if creator_role %}<span class="badge {{ creator_role|role_badge }} ms-1 text-uppercase">{{ creator_role|role_label }}</span>{% endif %}
+  {% endif %}
 </div>
 
 <div class="card card-body mb-3">
   <h2 class="mb-1">{{ experiment.title }}</h2>
   <div class="text-muted">
     Project:
-    <a href="{{ url_for('view_project', project_id=experiment.project.id) }}">{{ experiment.project.title }}</a>
+    <a href="{{ url_for('view_project', lab_slug=(current_lab.slug or current_lab.id), project_id=experiment.project.id) }}">{{ experiment.project.title }}</a>
     &middot; Created {{ experiment.created_at.strftime('%Y-%m-%d') }}
   </div>
 
@@ -27,7 +31,7 @@
     {% if exp.id == experiment.id %}
       <strong>{{ exp.title }}</strong>
     {% else %}
-      <a href="{{ url_for('view_experiment', experiment_id=exp.id) }}">{{ exp.title }}</a>
+      <a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=experiment.project.id, experiment_id=exp.id) }}">{{ exp.title }}</a>
     {% endif %}
   {%- endmacro %}
 
@@ -105,7 +109,7 @@
 
   {% macro render_linked_sample(node, linked_ids) -%}
     <li class="mb-1">
-      <a href="{{ url_for('view_sample', sample_id=node.id) }}">
+      <a href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=experiment.project.id, sample_id=node.id) }}">
         <strong>{{ node.name }}</strong>
       </a>
       {% if node.id in linked_ids %}
@@ -146,10 +150,10 @@
       {% macro render_exp_node(n) -%}
         <li class="mb-1">
           {% if n.is_current %}
-            <strong><a href="{{ url_for('view_experiment', experiment_id=n.id) }}">{{ n.title }}</a></strong>
+            <strong><a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=experiment.project.id, experiment_id=n.id) }}">{{ n.title }}</a></strong>
             <span class="badge bg-primary ms-2">current</span>
           {% else %}
-            <a href="{{ url_for('view_experiment', experiment_id=n.id) }}">{{ n.title }}</a>
+            <a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=experiment.project.id, experiment_id=n.id) }}">{{ n.title }}</a>
           {% endif %}
           {% if n.children and n.children|length %}
             <ul class="mt-1">

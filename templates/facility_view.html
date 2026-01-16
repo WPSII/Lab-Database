@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h2 class="mb-0">{{ facility.name }}</h2>
+    <div class="text-muted small">Facility</div>
+  </div>
+  <div class="d-flex gap-2">
+    {% if lab_role in ['owner','admin'] %}
+      <form method="post" action="{{ url_for('delete_facility_for_lab', lab_slug=(current_lab.slug or current_lab.id), facility_slug=(facility.slug or facility.id)) }}" onsubmit="return confirm('Delete this facility?');">
+        <button class="btn btn-sm btn-outline-danger">Delete</button>
+      </form>
+    {% endif %}
+    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('list_facilities_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">Back to Facilities</a>
+  </div>
+</div>
+
+<div class="card card-body">
+  <div class="row g-3">
+    <div class="col-md-7">
+      <h6 class="text-muted mb-1">Address</h6>
+      <div>
+        {{ facility.address_line1 or '—' }}{% if facility.address_line2 %}, {{ facility.address_line2 }}{% endif %}<br>
+        {{ facility.city or '' }}{% if facility.city and facility.state %}, {% endif %}{{ facility.state or '' }} {{ facility.postal_code or '' }}<br>
+        {{ facility.country or '' }}
+      </div>
+      {% if facility.location %}
+        <div class="mt-2 text-muted small">{{ facility.location }}</div>
+      {% endif %}
+    </div>
+    <div class="col-md-5">
+      <h6 class="text-muted mb-1">Manager</h6>
+      {% if facility.manager %}
+        <div><a href="{{ url_for('view_profile', user_id=facility.manager.id) }}">{{ facility.manager.name or facility.manager.email }}</a></div>
+      {% else %}
+        <div class="text-muted">—</div>
+      {% endif %}
+      <h6 class="text-muted mb-1 mt-3">Created</h6>
+      <div>{{ facility.created_at|lab_date }}</div>
+    </div>
+  </div>
+  {% if facility.description %}
+    <hr>
+    <h6 class="text-muted mb-1">Description</h6>
+    <div>{{ facility.description }}</div>
+  {% endif %}
+</div>
+
+{% if lab_role in ['owner','admin'] %}
+  <div class="card card-body mt-3">
+    <h5 class="mb-3">Edit Facility</h5>
+    <form method="post" action="{{ url_for('update_facility_for_lab', lab_slug=(current_lab.slug or current_lab.id), facility_slug=(facility.slug or facility.id)) }}">
+      <div class="mb-3">
+        <label class="form-label">Name</label>
+        <input class="form-control" name="name" value="{{ facility.name }}" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Address Line 1</label>
+        <input class="form-control" name="address_line1" value="{{ facility.address_line1 }}" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Address Line 2</label>
+        <input class="form-control" name="address_line2" value="{{ facility.address_line2 }}">
+      </div>
+      <div class="row g-2">
+        <div class="col-md-6">
+          <label class="form-label">City</label>
+          <input class="form-control" name="city" value="{{ facility.city }}" required>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">State/Province</label>
+          <select class="form-select" id="facility-state-select" name="state" data-selected-state="{{ facility.state or '' }}" required></select>
+          <input class="form-control mt-2 d-none" id="facility-state-input" name="state_text" placeholder="State/Province" value="{{ facility.state }}">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Postal Code</label>
+          <input class="form-control" name="postal_code" value="{{ facility.postal_code }}" required>
+        </div>
+      </div>
+      <div class="mt-2 mb-3">
+        <label class="form-label">Country</label>
+        <select class="form-select" id="facility-country-select" name="country" data-selected-country="{{ facility.country or '' }}" required></select>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Location</label>
+        <input class="form-control" name="location" value="{{ facility.location }}">
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Manager</label>
+        <select class="form-select" name="manager_user_id" required>
+          {% for m in current_lab.members %}
+            {% if m.user and m.role in ['owner','admin'] %}
+              <option value="{{ m.user.id }}" {% if facility.manager and facility.manager.id == m.user.id %}selected{% endif %}>{{ m.user.name or m.user.email }}</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Description</label>
+        <textarea class="form-control" name="description" rows="3">{{ facility.description }}</textarea>
+      </div>
+      <button class="btn btn-primary">Save Changes</button>
+    </form>
+  </div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function(){
+  const countrySel = document.getElementById('facility-country-select');
+  const stateSel = document.getElementById('facility-state-select');
+  const stateInput = document.getElementById('facility-state-input');
+  if (!countrySel || !stateSel) return;
+
+  const selectedCountry = countrySel.dataset.selectedCountry || '';
+  const selectedState = stateSel.dataset.selectedState || '';
+
+  function setStateMode(hasOptions){
+    if (hasOptions){
+      stateSel.classList.remove('d-none');
+      stateSel.required = true;
+      if (stateInput){
+        stateInput.classList.add('d-none');
+        stateInput.required = false;
+      }
+    } else if (stateInput){
+      stateSel.classList.add('d-none');
+      stateSel.required = false;
+      stateInput.classList.remove('d-none');
+      stateInput.required = true;
+    }
+  }
+
+  function fillSelect(sel, items, placeholder){
+    sel.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = placeholder || 'Select…';
+    sel.appendChild(opt);
+    items.forEach(item => {
+      const o = document.createElement('option');
+      o.value = item.code;
+      o.textContent = item.name;
+      sel.appendChild(o);
+    });
+  }
+
+  fetch('/api/geo/countries')
+    .then(r => r.json())
+    .then(list => {
+      fillSelect(countrySel, list, 'Select a country…');
+      const target = selectedCountry || 'US';
+      if (list.some(c => c.code === target)) {
+        countrySel.value = target;
+      }
+      countrySel.dispatchEvent(new Event('change'));
+    });
+
+  countrySel.addEventListener('change', function(){
+    const code = this.value;
+    if (!code){
+      fillSelect(stateSel, [], 'Select a state/province…');
+      setStateMode(false);
+      return;
+    }
+    fetch(`/api/geo/subdivisions?country=${encodeURIComponent(code)}`)
+      .then(r => r.json())
+      .then(list => {
+        fillSelect(stateSel, list, 'Select a state/province…');
+        const hasOptions = list && list.length;
+        setStateMode(hasOptions);
+        if (hasOptions) {
+          if (selectedState && list.some(s => s.code === selectedState)) {
+            stateSel.value = selectedState;
+          } else if (code === 'US' && list.some(s => s.code === 'TX')) {
+            stateSel.value = 'TX';
+          }
+        }
+      });
+  });
+})();
+</script>
+{% endblock %}

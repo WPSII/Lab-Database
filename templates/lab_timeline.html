@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h2 class="mb-0">Lab Timeline</h2>
+    <div class="text-muted small">Recent activity across projects, experiments, samples, and equipment</div>
+  </div>
+</div>
+
+<form method="get" class="card card-body mb-3">
+  <div class="row g-2 align-items-end">
+    <div class="col-md-6">
+      <label class="form-label">Entity Types</label>
+      <div class="d-flex flex-wrap gap-2">
+        {% set entities = ["project","experiment","sample","equipment","stock_material"] %}
+        {% for e in entities %}
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="entities" value="{{ e }}" id="ent-{{ e }}" {% if e in selected_entities %}checked{% endif %}>
+            <label class="form-check-label" for="ent-{{ e }}">{{ e.replace('_',' ').title() }}</label>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="col-md-4">
+      <label class="form-label">Event Types</label>
+      <div class="d-flex flex-wrap gap-2">
+        {% set types = ["created","updated","deleted","linked"] %}
+        {% for t in types %}
+          <div class="form-check form-check-inline">
+            <input class="form-check-input" type="checkbox" name="types" value="{{ t }}" id="type-{{ t }}" {% if t in selected_types %}checked{% endif %}>
+            <label class="form-check-label" for="type-{{ t }}">{{ t.title() }}</label>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="col-md-2">
+      <button class="btn btn-primary w-100">Apply</button>
+    </div>
+  </div>
+</form>
+
+{% if grouped and grouped|length %}
+  {% for month, events in grouped.items() %}
+    <div class="card card-body mb-3">
+      <h5 class="mb-3">{{ month }}</h5>
+      <ul class="list-group">
+        {% for ev in events %}
+          <li class="list-group-item d-flex justify-content-between align-items-start">
+            <div>
+              <div class="fw-semibold">{{ ev.title or ev.entity_type }}</div>
+              <div class="small text-muted">
+                {{ ev.entity_type.replace('_',' ').title() }} · {{ ev.event_type.title() }}
+                {% if ev.meta and ev.meta.project_id %} · Project #{{ ev.meta.project_id }}{% endif %}
+              </div>
+            </div>
+            <div class="text-muted small">{{ ev.occurred_at }}</div>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endfor %}
+{% else %}
+  <div class="alert alert-info">No timeline events yet.</div>
+{% endif %}
+
+{% endblock %}
