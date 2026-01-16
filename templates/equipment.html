@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h2 class="mb-0">Equipment</h2>
+    <div class="text-muted small">All instruments and devices</div>
+  </div>
+  <div>
+    {% if lab_role in ['owner','admin','editor'] %}
+      <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#addEquipmentModal">Add Equipment</button>
+    {% endif %}
+  </div>
+</div>
+
+<div class="row g-3">
+  {% for e in equipment %}
+    <div class="col-md-6">
+      <div class="card card-body mb-2">
+        <div class="d-flex justify-content-between align-items-start">
+          <div>
+            <h5 class="mb-1">{{ e.name }}</h5>
+            <div class="small text-muted">{{ e.model or '' }} · {{ e.serial_number or '' }}</div>
+          </div>
+          <div class="text-end small text-muted">Created {{ e.created_at.strftime('%Y-%m-%d') }}</div>
+        </div>
+        <div class="mt-2">{{ e.location or '' }} {% if e.project %} · Project: <a href="{{ url_for('view_project', lab_slug=(current_lab.slug or current_lab.id), project_id=e.project.id) }}">{{ e.project.title }}</a>{% endif %}</div>
+        <div class="mt-3 d-flex align-items-center gap-3 flex-wrap">
+          <div class="text-center" style="max-width:160px;">
+            <img src="{{ url_for('equipment_qr', equipment_id=e.id) }}"
+                 alt="QR for {{ e.name }}"
+                 class="img-fluid"
+                 style="max-width:140px; border: 1px solid var(--bs-border-color); border-radius: .5rem; padding: .25rem;">
+            <div class="small text-muted mt-1">Scan to open equipment list</div>
+          </div>
+          {% if lab_role in ['owner','admin','editor'] %}
+            <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#editEquipmentModal-{{ e.id }}">Edit</button>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  {% else %}
+    <div class="col-12"><p class="text-muted">No equipment yet.</p></div>
+  {% endfor %}
+</div>
+
+{% if lab_role in ['owner','admin','editor'] %}
+<div class="modal fade" id="addEquipmentModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('create_equipment_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Add Equipment</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label">Name</label>
+              <input class="form-control" name="name" required>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Model</label>
+              <input class="form-control" name="model">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Serial Number</label>
+              <input class="form-control" name="serial_number">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Manufacturer</label>
+              <input class="form-control" name="manufacturer">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Location</label>
+              <input class="form-control" name="location">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Purchase Date</label>
+              <input class="form-control" type="date" name="purchase_date">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Status</label>
+              <select class="form-select" name="status">
+                <option value="active" selected>active</option>
+                <option value="retired">retired</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-primary">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+{% for e in equipment %}
+  <div class="modal fade" id="editEquipmentModal-{{ e.id }}" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <form method="post" action="{{ url_for('edit_equipment_for_lab', lab_slug=(current_lab.slug or current_lab.id), equipment_id=e.id) }}">
+          <div class="modal-header">
+            <h5 class="modal-title">Edit Equipment</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label">Name</label>
+                <input class="form-control" name="name" value="{{ e.name }}" required>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Model</label>
+                <input class="form-control" name="model" value="{{ e.model or '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Serial Number</label>
+                <input class="form-control" name="serial_number" value="{{ e.serial_number or '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Manufacturer</label>
+                <input class="form-control" name="manufacturer" value="{{ e.manufacturer or '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Location</label>
+                <input class="form-control" name="location" value="{{ e.location or '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Purchase Date</label>
+                <input class="form-control" type="date" name="purchase_date" value="{{ e.purchase_date.strftime('%Y-%m-%d') if e.purchase_date else '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Status</label>
+                <select class="form-select" name="status">
+                  <option value="active" {% if e.status == 'active' %}selected{% endif %}>active</option>
+                  <option value="retired" {% if e.status == 'retired' %}selected{% endif %}>retired</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-primary">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endfor %}
+{% endif %}
+{% endblock %}

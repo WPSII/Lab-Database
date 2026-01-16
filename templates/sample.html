@@ -2,11 +2,15 @@
 {% block content %}
 
 <p class="mb-3">
-  <a href="{{ url_for('list_samples') }}">&larr; Back to samples</a>
+  <a href="{{ url_for('list_samples_for_lab', lab_slug=(current_lab.slug or current_lab.id)) if current_lab is defined and current_lab else url_for('list_samples') }}">&larr; Back to samples</a>
 </p>
 <div class="text-muted mb-2">
   Created {{ sample.created_at.strftime('%Y-%m-%d') }}
-  {% if sample.creator %}by {{ sample.creator.name or sample.creator.email }}{% endif %}
+  {% if sample.creator %}
+    {% set creator_role = role_for_user(sample.creator.id) %}
+    by <a href="{{ url_for('view_profile', user_id=sample.creator.id) }}">{{ sample.creator.name or sample.creator.email }}</a>
+    {% if creator_role %}<span class="badge {{ creator_role|role_badge }} ms-1 text-uppercase">{{ creator_role|role_label }}</span>{% endif %}
+  {% endif %}
 </div>
 
 <div class="d-flex flex-wrap align-items-start gap-3 mb-3">
@@ -14,7 +18,7 @@
     <h2 class="mb-1">{{ sample.name }}</h2>
     <div class="text-muted">
       Project:
-      <a href="{{ url_for('view_project', project_id=sample.project.id) }}">{{ sample.project.title }}</a>
+      <a href="{{ url_for('view_project', lab_slug=(current_lab.slug or current_lab.id), project_id=sample.project.id) }}">{{ sample.project.title }}</a>
       &middot; Created {{ sample.created_at.strftime('%Y-%m-%d') }}
     </div>
   </div>
@@ -27,7 +31,18 @@
          style="max-width:200px;">
     <div class="form-text text-center">Scan to open this sample.</div>
   </div>
+
 </div>
+
+{% if sample.stock_material %}
+  <div class="card card-body mb-3">
+    <h6 class="mb-1">Stock Material</h6>
+    <div>
+      <a href="{{ url_for('view_stock_material', stock_id=sample.stock_material.id) }}">{{ sample.stock_material.name }}</a>
+      {% if sample.stock_material.lot_number %} · <span class="text-muted">Lot {{ sample.stock_material.lot_number }}</span>{% endif %}
+    </div>
+  </div>
+{% endif %}
 
 {% if needs_update and needs_update > 0 %}
   <div class="alert alert-warning d-flex align-items-center" role="alert">
@@ -49,7 +64,7 @@
         {% if n.id == sample.id %}
           <strong>{{ n.name }}</strong>
         {% else %}
-          <a href="{{ url_for('view_sample', sample_id=n.id) }}">{{ n.name }}</a>
+          <a href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=sample.project.id, sample_id=n.id) }}">{{ n.name }}</a>
         {% endif %}
         {% if not loop.last %} &raquo; {% endif %}
       {% endfor %}
@@ -59,10 +74,10 @@
   {% macro render_sample_node(n) -%}
     <li class="mb-1">
       {% if n.is_current %}
-        <strong><a href="{{ url_for('view_sample', sample_id=n.id) }}">{{ n.name }}</a></strong>
+        <strong><a href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=sample.project.id, sample_id=n.id) }}">{{ n.name }}</a></strong>
         <span class="badge bg-primary ms-2">current</span>
       {% else %}
-        <a href="{{ url_for('view_sample', sample_id=n.id) }}">{{ n.name }}</a>
+        <a href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=sample.project.id, sample_id=n.id) }}">{{ n.name }}</a>
       {% endif %}
 
       {% if n.children and n.children|length %}
@@ -126,6 +141,19 @@
           <input class="form-control" name="name" value="{{ sample.name }}" required>
         </div>
 
+        {% if not sample.parent %}
+          <div class="mb-3">
+            <label class="form-label">Stock Material (lab inventory)</label>
+            <select class="form-select" name="stock_material_id">
+              <option value="">(none)</option>
+              {% for m in stock_materials %}
+                <option value="{{ m.id }}" {% if sample.stock_material and sample.stock_material.id == m.id %}selected{% endif %}>{{ m.name }}{% if m.lot_number %} — {{ m.lot_number }}{% endif %}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">Only the root sample may change the stock material; changes will cascade to descendants.</div>
+          </div>
+        {% endif %}
+
         {% if attr_defs and attr_defs|length %}
           <h6 class="mt-2">Attributes</h6>
           {% for a in attr_defs %}
@@ -140,7 +168,7 @@
               </label>
 
               {% if a.field_type == "select" %}
-                <select class="form-select" name="attr_{{ a.id }}" {% if a.required %}required{% endif %}>
+                <select class="form-select" name="attr_{{ a.id }}" {% if a.required %}required{% endif %} {% if sample.parent and a.inherited %}disabled{% endif %}>
                   {% if not a.required %}
                     <option value="">(optional)</option>
                   {% endif %}
@@ -152,12 +180,14 @@
                 <input
                   class="form-control"
                   name="attr_{{ a.id }}"
-                  {% if a.field_type == "number" %}type="number"
+                  {% if a.field_type == "number" %}type="number" step="any" max="1000000000"
                   {% elif a.field_type == "date" %}type="date"
                   {% else %}type="text"{% endif %}
                   value="{{ a.value or '' }}"
+                  {% if a.field_type != "number" and a.field_type != "date" %}maxlength="200"{% endif %}
                   {% if not a.required %}placeholder="(optional){% if a.unit %} — {{ a.unit }}{% endif %}"{% endif %}
                   {% if a.required %}required{% endif %}
+                  {% if sample.parent and a.inherited %}disabled{% endif %}
                 >
               {% endif %}
             </div>
@@ -202,7 +232,7 @@
       {% if exp.parent %}
         {{ exp_chain(exp.parent) }} &raquo;
       {% endif %}
-      <a href="{{ url_for('view_experiment', experiment_id=exp.id) }}">{{ exp.title }}</a>
+      <a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=sample.project.id, experiment_id=exp.id) }}">{{ exp.title }}</a>
     {%- endmacro %}
 
     <!-- Linked Experiments -->
@@ -276,7 +306,7 @@
               </label>
 
               {% if a.field_type == "select" %}
-                <select class="form-select" name="attr_{{ a.id }}" {% if a.required %}required{% endif %}>
+                <select class="form-select" name="attr_{{ a.id }}" {% if a.required %}required{% endif %} {% if a.inherited %}disabled{% endif %}>
                   {% if not a.required %}
                     <option value="">(optional)</option>
                   {% endif %}
@@ -288,12 +318,14 @@
                 <input
                   class="form-control"
                   name="attr_{{ a.id }}"
-                  {% if a.field_type == "number" %}type="number"
+                  {% if a.field_type == "number" %}type="number" step="any" max="1000000000"
                   {% elif a.field_type == "date" %}type="date"
                   {% else %}type="text"{% endif %}
                   value="{{ a.value or '' }}"
+                  {% if a.field_type != "number" and a.field_type != "date" %}maxlength="200"{% endif %}
                   {% if not a.required %}placeholder="(optional){% if a.unit %} — {{ a.unit }}{% endif %}"{% endif %}
                   {% if a.required %}required{% endif %}
+                  {% if a.inherited %}disabled{% endif %}
                 >
               {% endif %}
             </div>

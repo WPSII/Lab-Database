@@ -19,6 +19,7 @@
     .tree li        { margin: .15rem 0; }
     .nav-sep        { opacity:.25; margin: 0 .5rem; }
     .navbar .btn-sm { --bs-btn-padding-y: .25rem; --bs-btn-padding-x: .5rem; }
+    .bg-hot-pink    { background-color: #ff4fa3 !important; color: #fff !important; }
   </style>
 </head>
 <body>
@@ -26,9 +27,13 @@
 <!-- Top Navbar -->
 <nav class="navbar navbar-expand-lg bg-body-tertiary border-bottom sticky-top">
   <div class="container">
-    <a class="navbar-brand fw-semibold brand-compact" href="{{ url_for('index') }}">
-      Lab Database
+    {% set lab_slug = (current_lab.slug or current_lab.id) if current_lab is defined and current_lab else None %}
+    <a class="navbar-brand fw-semibold brand-compact btn btn-sm btn-primary text-white" href="{{ url_for('index') }}">
+      rickBASE
     </a>
+    {% if current_lab is defined and current_lab %}
+      <a class="btn btn-sm btn-secondary ms-2" href="{{ lab_link(current_lab) }}">{{ current_lab.name }}</a>
+    {% endif %}
 
     <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#topnav" aria-controls="topnav" aria-expanded="false" aria-label="Toggle navigation">
       <span class="navbar-toggler-icon"></span>
@@ -37,42 +42,23 @@
     <div class="collapse navbar-collapse" id="topnav">
       <!-- Left: primary nav -->
       <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-        <li class="nav-item">
-          <a class="nav-link{% if request.endpoint == 'index' %} active{% endif %}" href="{{ url_for('index') }}">
-            Projects
-            {% if global_counts is defined and global_counts.projects is defined %}
-              <span class="badge text-bg-secondary ms-1 badge-pill">{{ global_counts.projects }}</span>
-            {% endif %}
-          </a>
+        {% if current_lab is defined and current_lab %}
+        <li class="nav-item dropdown">
+          <a class="nav-link dropdown-toggle" href="#" id="rootMenu" role="button" data-bs-toggle="dropdown" aria-expanded="false">Menu</a>
+          <ul class="dropdown-menu" aria-labelledby="rootMenu">
+            <li><a class="dropdown-item" href="{{ url_for('all_projects_for_lab', lab_slug=lab_slug) }}">All Projects</a></li>
+            <li><a class="dropdown-item" href="{{ url_for('list_samples_for_lab', lab_slug=lab_slug) }}">Samples</a></li>
+            <li><a class="dropdown-item" href="{{ url_for('list_equipment_for_lab', lab_slug=lab_slug) }}">Equipment</a></li>
+            <li><a class="dropdown-item" href="{{ url_for('list_stock_materials_for_lab', lab_slug=lab_slug) }}">Stock Inventory</a></li>
+            <li><a class="dropdown-item" href="{{ url_for('lab_timeline', lab_slug=lab_slug) }}">Lab Timeline</a></li>
+          </ul>
         </li>
-        <li class="nav-item">
-          <a class="nav-link{% if request.endpoint in ['list_samples','view_sample'] %} active{% endif %}" href="{{ url_for('list_samples') }}">
-            Samples
-            {% if global_counts is defined and global_counts.samples is defined %}
-              <span class="badge text-bg-secondary ms-1 badge-pill">{{ global_counts.samples }}</span>
-            {% endif %}
-          </a>
-        </li>
-        <li class="nav-item">
-          <span class="nav-link disabled">
-            Experiments
-            {% if global_counts is defined and global_counts.experiments is defined %}
-              <span class="badge text-bg-secondary ms-1 badge-pill">{{ global_counts.experiments }}</span>
-            {% endif %}
-          </span>
-        </li>
+        {% endif %}
+
       </ul>
 
       <!-- Right: Search, New, Theme -->
       <div class="d-flex align-items-center gap-2">
-
-        <!-- Global search (lands on Samples) -->
-        <form class="d-flex" role="search" method="get" action="{{ url_for('list_samples') }}">
-          <input class="form-control form-control-sm me-2" type="search" name="q" placeholder="Search samples…" aria-label="Search">
-          <button class="btn btn-sm btn-outline-secondary">Search</button>
-        </form>
-
-        <span class="nav-sep d-none d-lg-inline">|</span>
 
         <!-- New dropdown -->
         <div class="dropdown">
@@ -80,8 +66,8 @@
             New
           </button>
           <ul class="dropdown-menu dropdown-menu-end">
-            <li><a class="dropdown-item" href="{{ url_for('index') }}#create-project">Project</a></li>
-            <li><a class="dropdown-item" href="{{ url_for('list_samples') }}#create-sample">Sample</a></li>
+            <li><a class="dropdown-item" href="{{ lab_link(current_lab) if current_lab is defined and current_lab else url_for('index') }}#create-project">Project</a></li>
+            <li><a class="dropdown-item" href="{{ url_for('list_samples_for_lab', lab_slug=lab_slug) if current_lab is defined and current_lab else url_for('list_samples') }}#create-sample">Sample</a></li>
             <li>
               {% if project is defined %}
                 <a class="dropdown-item" href="{{ url_for('view_project', project_id=project.id) }}#create-experiment">
@@ -109,11 +95,18 @@
 
         {% if current_user.is_authenticated %}
           <div class="dropdown">
-            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">
+            <a class="btn btn-sm btn-outline-secondary dropdown-toggle" href="{{ url_for('view_profile', user_id=current_user.id) }}" data-bs-toggle="dropdown">
               {{ current_user.name or current_user.email }}
-            </button>
+              {% if current_lab is defined and current_lab %}
+                {% set user_role = role_for_user(current_user.id) %}
+                {% if user_role %}
+                  <span class="badge {{ user_role|role_badge }} ms-1 text-uppercase">{{ user_role|role_label }}</span>
+                {% endif %}
+              {% endif %}
+            </a>
             <ul class="dropdown-menu dropdown-menu-end">
               <li><span class="dropdown-item-text small text-muted">{{ current_user.email }}</span></li>
+              <li><a class="dropdown-item" href="{{ url_for('edit_profile') }}">Profile</a></li>
               <li><hr class="dropdown-divider"></li>
               <li><a class="dropdown-item" href="{{ url_for('logout') }}">Sign out</a></li>
             </ul>
@@ -155,7 +148,7 @@
 
 <footer class="container border-top pt-3 pb-4 small text-muted">
   <div class="d-flex justify-content-between align-items-center">
-    <span>Lab Database</span>
+    <span>rickBASE</span>
     <span>Flask · Bootstrap 5</span>
   </div>
 </footer>

@@ -1,21 +1,50 @@
 {% extends "base.html" %}
 {% block content %}
-<h3>Projects</h3>
+<h3>Your Labs</h3>
 <ul class="list-group mb-4">
-  {% for p in projects %}
-    <li class="list-group-item d-flex justify-content-between">
-      <a href="{{ url_for('view_project', project_id=p.id) }}">{{ p.title }}</a>
-      <small class="text-muted">{{ p.created_at.strftime('%Y-%m-%d') }}</small>
-    </li>
+  {% if not current_user.is_authenticated %}
+    <li class="list-group-item">Please <a href="{{ url_for('auth_login') }}">log in</a> to see your labs.</li>
   {% else %}
-    <li class="list-group-item">No projects yet.</li>
-  {% endfor %}
+    {% for lab in labs %}
+      <li class="list-group-item d-flex justify-content-between">
+        <a href="{{ lab_link(lab) }}">{{ lab.name }}</a>
+        <small class="text-muted">{{ lab.created_at.strftime('%Y-%m-%d') }}</small>
+      </li>
+    {% else %}
+      <li class="list-group-item">You are not a member of any labs yet.</li>
+    {% endfor %}
+  {% endif %}
 </ul>
 
-<form method="post" action="{{ url_for('create_project') }}" class="card card-body">
-  <h5 class="mb-3">New Project</h5>
-  <input class="form-control mb-2" name="title" placeholder="Title" required>
-  <textarea class="form-control mb-3" name="description" placeholder="Description"></textarea>
-  <button class="btn btn-primary">Create Project</button>
+{% if current_user.is_authenticated %}
+<form method="post" action="{{ url_for('create_lab') }}" class="card card-body">
+  <h5 class="mb-3">Create a Lab</h5>
+  <input class="form-control mb-2" name="name" placeholder="Lab name" required>
+  <button class="btn btn-primary">Create Lab</button>
 </form>
+{% endif %}
+
+{% if incoming_invites %}
+<hr>
+<h5>Pending Invitations</h5>
+<ul class="list-group mb-4">
+  {% for inv in incoming_invites %}
+    <li class="list-group-item d-flex justify-content-between align-items-center">
+      <div>
+        <div><strong>{{ inv.inviter.name if inv.inviter and inv.inviter.name else inv.inviter.email if inv.inviter else 'Unknown' }}</strong> invited you to <strong>{{ inv.database.name if inv.database else 'a lab' }}</strong></div>
+        <div class="text-muted small">From: {{ inv.inviter.email if inv.inviter else '' }}</div>
+      </div>
+      <div class="d-flex gap-2">
+        <form method="post" action="{{ url_for('invite_accept', inv_id=inv.id) }}">
+          <button class="btn btn-sm btn-success">Accept</button>
+        </form>
+        <form method="post" action="{{ url_for('invite_decline', inv_id=inv.id) }}" onsubmit="return confirm('Decline invitation?');">
+          <button class="btn btn-sm btn-outline-secondary">Decline</button>
+        </form>
+      </div>
+    </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
 {% endblock %}

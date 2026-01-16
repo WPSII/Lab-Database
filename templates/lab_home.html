@@ -1,0 +1,377 @@
+{% extends "base.html" %}
+{% block content %}
+<h3>{{ current_lab.name }}</h3>
+<p class="text-muted">Created {{ current_lab.created_at|lab_date }} - Owner: {% if current_lab.owner %}
+  {% set owner_role = role_for_user(current_lab.owner.id) %}
+  <a href="{{ url_for('view_profile', user_id=current_lab.owner.id) }}">{{ current_lab.owner.name }}</a>
+  {% if owner_role %}<span class="badge {{ owner_role|role_badge }} ms-1 text-uppercase">{{ owner_role|role_label }}</span>{% endif %}
+{% else %}Unknown{% endif %}</p>
+
+<div class="d-flex flex-wrap gap-2 mb-4">
+  <a class="btn btn-sm btn-outline-primary" href="{{ url_for('all_projects_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">Projects</a>
+  <a class="btn btn-sm btn-outline-primary" href="{{ url_for('list_samples_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">Samples</a>
+  <a class="btn btn-sm btn-outline-primary" href="{{ url_for('list_equipment_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">Equipment</a>
+  <a class="btn btn-sm btn-outline-primary" href="{{ url_for('list_facilities_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">Facilities</a>
+</div>
+
+{% set current_role = role_for_user(current_user.id) %}
+{% set can_create_project = current_role in ['owner','admin','editor'] %}
+
+<div class="row g-4">
+  <div class="col-lg-8">
+    <div class="card card-body mb-4">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Projects</h5>
+        <div class="d-flex gap-2">
+          {% if can_create_project %}
+            <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#createProjectModal">Create Project</button>
+          {% endif %}
+          <a class="btn btn-sm btn-outline-primary" href="{{ url_for('all_projects_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">View all</a>
+        </div>
+      </div>
+      {% if projects and projects|length %}
+        <ul class="list-group">
+          {% for p in projects %}
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              <a href="{{ url_for('view_project', project_id=p.id) }}">{{ p.title }}</a>
+              <span class="small text-muted">
+                {% if p.pi %}
+                  {{ p.pi.name or p.pi.email }}
+                {% else %}
+                  {{ p.created_at|lab_date }}
+                {% endif %}
+              </span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="text-muted small">No projects yet.</div>
+      {% endif %}
+    </div>
+
+    <div class="card card-body">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Facilities</h5>
+        {% if can_manage %}
+          <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#createFacilityModal">Create Facility</button>
+        {% endif %}
+      </div>
+      {% if facilities and facilities|length %}
+        <ul class="list-group">
+          {% for f in facilities %}
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              <a href="{{ url_for('view_facility_for_lab', lab_slug=(current_lab.slug or current_lab.id), facility_slug=(f.slug or f.id)) }}">{{ f.name }}</a>
+              {% if f.manager %}
+                <span class="small text-muted">{{ f.manager.name or f.manager.email }}</span>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="text-muted small">No facilities yet.</div>
+      {% endif %}
+    </div>
+
+    {% if can_create_project %}
+    <div class="modal fade" id="createProjectModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <form method="post" action="{{ url_for('create_project') }}">
+            <div class="modal-header">
+              <h5 class="modal-title">Create Project</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <div class="mb-3">
+                <label class="form-label">Project Name</label>
+                <input class="form-control" name="title" required placeholder="e.g., Alloy Aging Study">
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Primary Investigator</label>
+                <select class="form-select" name="pi_user_id">
+                  <option value="">(unassigned)</option>
+                  {% for m in current_lab.members %}
+                    {% if m.user %}
+                      <option value="{{ m.user.id }}">{{ m.user.name or m.user.email }}</option>
+                    {% endif %}
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Description (optional)</label>
+                <textarea class="form-control" name="description" rows="3" placeholder="Summary, goals, or notes"></textarea>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+              <button class="btn btn-primary">Create Project</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if can_manage %}
+      <div class="modal fade" id="createFacilityModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+          <div class="modal-content">
+            <form method="post" action="{{ url_for('create_facility_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">
+              <div class="modal-header">
+                <h5 class="modal-title">Create Facility</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <div class="modal-body">
+                <div class="mb-3">
+                  <label class="form-label">Name</label>
+                  <input class="form-control" name="name" required>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Address Line 1</label>
+                  <input class="form-control" name="address_line1" required>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Address Line 2</label>
+                  <input class="form-control" name="address_line2">
+                </div>
+                <div class="row g-2">
+                  <div class="col-md-6">
+                    <label class="form-label">City</label>
+                    <input class="form-control" name="city" required>
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label">State/Province</label>
+                    <select class="form-select" id="facility-state-select" name="state" required></select>
+                    <input class="form-control mt-2 d-none" id="facility-state-input" name="state_text" placeholder="State/Province">
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label">Postal Code</label>
+                    <input class="form-control" name="postal_code" required>
+                  </div>
+                </div>
+                <div class="mt-2 mb-3">
+                  <label class="form-label">Country</label>
+                  <select class="form-select" id="facility-country-select" name="country" required></select>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Manager</label>
+                  <select class="form-select" name="manager_user_id" required>
+                    {% for m in lab_members %}
+                      {% if m.user and m.role in ['owner','admin'] %}
+                        <option value="{{ m.user.id }}">{{ m.user.name or m.user.email }}</option>
+                      {% endif %}
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="mb-3">
+                  <label class="form-label">Description</label>
+                  <textarea class="form-control" name="description" rows="3"></textarea>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-primary">Create</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card card-body bg-body-tertiary border">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Members</h5>
+        {% if can_manage %}
+          <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#inviteMemberModal">Invite Member</button>
+        {% endif %}
+      </div>
+      {% set role_order = ['owner','admin','editor','viewer'] %}
+      {% set any_members = current_lab.members|length %}
+      {% if any_members %}
+        {% for role in role_order %}
+          {% set role_members = current_lab.members|selectattr('role', 'equalto', role)|list %}
+          {% if role_members|length %}
+            <div class="mb-2">
+              <span class="badge {{ role|role_badge }} text-uppercase">{{ role|role_label }}</span>
+            </div>
+            <ul class="list-group mb-3">
+              {% for m in role_members %}
+                <li class="list-group-item d-flex justify-content-between align-items-center">
+                  <div class="d-flex align-items-center gap-2">
+                    {% if m.user %}
+                      <strong><a href="{{ url_for('view_profile', user_id=m.user.id) }}">{{ m.user.name }}</a></strong>
+                    {% else %}
+                      <strong>{{ 'user:'+m.user_id|string }}</strong>
+                    {% endif %}
+                  </div>
+                  {% if can_manage %}
+                    <div class="d-flex gap-2 align-items-center">
+                      <form method="post" action="{{ url_for('lab_members_change_role', db_id=current_lab.id) }}" class="d-inline">
+                        <input type="hidden" name="user_id" value="{{ m.user_id }}">
+                        <select name="role" class="form-select form-select-sm">
+                          <option value="viewer" {% if m.role=='viewer' %}selected{% endif %}>viewer</option>
+                          <option value="editor" {% if m.role=='editor' %}selected{% endif %}>editor</option>
+                          <option value="admin" {% if m.role=='admin' %}selected{% endif %}>manager</option>
+                          {% if is_owner %}
+                            <option value="owner" {% if m.role=='owner' %}selected{% endif %}>owner</option>
+                          {% endif %}
+                        </select>
+                        <button class="btn btn-sm btn-secondary mt-1">Change</button>
+                      </form>
+                      {% if m.role != 'owner' %}
+                        <form method="post" action="{{ url_for('lab_members_remove', db_id=current_lab.id) }}" onsubmit="return confirm('Remove member?');" class="d-inline">
+                          <input type="hidden" name="user_id" value="{{ m.user_id }}">
+                          <button class="btn btn-sm btn-danger">Remove</button>
+                        </form>
+                      {% endif %}
+                    </div>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        {% endfor %}
+      {% else %}
+        <ul class="list-group mb-0">
+          <li class="list-group-item">No members yet.</li>
+        </ul>
+      {% endif %}
+    </div>
+
+    {% if can_manage %}
+    <div class="modal fade" id="inviteMemberModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <form method="post" action="{{ url_for('lab_members_add', db_id=current_lab.id) }}">
+            <div class="modal-header">
+              <h5 class="modal-title">Invite Member</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              <div class="mb-3">
+                <label class="form-label">User Email</label>
+                <input class="form-control" name="email" placeholder="User email" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label">Role</label>
+                <select name="role" class="form-select">
+                  <option value="viewer">viewer</option>
+                  <option value="editor">editor</option>
+                  <option value="admin">manager</option>
+                  {% if is_owner %}
+                    <option value="owner">owner</option>
+                  {% endif %}
+                </select>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+              <button class="btn btn-primary">Invite</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if is_owner %}
+      <div class="card card-body mt-3">
+        <h5 class="mb-3">Lab Time Zone</h5>
+        <form method="post" action="{{ url_for('update_lab_timezone', lab_slug=(current_lab.slug or current_lab.id)) }}">
+          <label class="form-label">Time Zone (IANA)</label>
+          <select class="form-select" name="time_zone" required>
+            {% set tz = current_lab.time_zone or 'UTC' %}
+            <option value="UTC" {% if tz == 'UTC' %}selected{% endif %}>UTC</option>
+            <option value="America/New_York" {% if tz == 'America/New_York' %}selected{% endif %}>America/New_York</option>
+            <option value="America/Chicago" {% if tz == 'America/Chicago' %}selected{% endif %}>America/Chicago</option>
+            <option value="America/Denver" {% if tz == 'America/Denver' %}selected{% endif %}>America/Denver</option>
+            <option value="America/Los_Angeles" {% if tz == 'America/Los_Angeles' %}selected{% endif %}>America/Los_Angeles</option>
+            <option value="Europe/London" {% if tz == 'Europe/London' %}selected{% endif %}>Europe/London</option>
+            <option value="Europe/Berlin" {% if tz == 'Europe/Berlin' %}selected{% endif %}>Europe/Berlin</option>
+            <option value="Asia/Shanghai" {% if tz == 'Asia/Shanghai' %}selected{% endif %}>Asia/Shanghai</option>
+            <option value="Asia/Tokyo" {% if tz == 'Asia/Tokyo' %}selected{% endif %}>Asia/Tokyo</option>
+            <option value="Australia/Sydney" {% if tz == 'Australia/Sydney' %}selected{% endif %}>Australia/Sydney</option>
+          </select>
+          <div class="form-text">Applies to all lab time tracking.</div>
+          <button class="btn btn-primary mt-2">Save Time Zone</button>
+        </form>
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+{% block scripts %}
+<script>
+(function(){
+  const countrySel = document.getElementById('facility-country-select');
+  const stateSel = document.getElementById('facility-state-select');
+  const stateInput = document.getElementById('facility-state-input');
+  if (!countrySel || !stateSel) return;
+
+  function setStateMode(hasOptions){
+    if (hasOptions){
+      stateSel.classList.remove('d-none');
+      stateSel.required = true;
+      if (stateInput){
+        stateInput.classList.add('d-none');
+        stateInput.required = false;
+        stateInput.value = '';
+      }
+    } else if (stateInput){
+      stateSel.classList.add('d-none');
+      stateSel.required = false;
+      stateInput.classList.remove('d-none');
+      stateInput.required = true;
+    }
+  }
+
+  function fillSelect(sel, items, placeholder){
+    sel.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = placeholder || 'Select…';
+    sel.appendChild(opt);
+    items.forEach(item => {
+      const o = document.createElement('option');
+      o.value = item.code;
+      o.textContent = item.name;
+      sel.appendChild(o);
+    });
+  }
+
+  fetch('/api/geo/countries')
+    .then(r => r.json())
+    .then(list => {
+      fillSelect(countrySel, list, 'Select a country…');
+      const hasUS = list.some(c => c.code === 'US');
+      if (hasUS) {
+        countrySel.value = 'US';
+        countrySel.dispatchEvent(new Event('change'));
+      }
+    });
+
+  countrySel.addEventListener('change', function(){
+    const code = this.value;
+    if (!code){
+      fillSelect(stateSel, [], 'Select a state/province…');
+      setStateMode(false);
+      return;
+    }
+    fetch(`/api/geo/subdivisions?country=${encodeURIComponent(code)}`)
+      .then(r => r.json())
+      .then(list => {
+        fillSelect(stateSel, list, 'Select a state/province…');
+        setStateMode(list && list.length);
+        if (code === 'US') {
+          const hasTX = list.some(s => s.code === 'TX');
+          if (hasTX) stateSel.value = 'TX';
+        }
+      });
+  });
+})();
+</script>
+{% endblock %}
+
+{% endblock %}

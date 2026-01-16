@@ -1,46 +1,132 @@
 {% extends "base.html" %}
 {% block content %}
 
-<p class="mb-3">
-  <a href="{{ url_for('index') }}">&larr; Back to all projects</a>
-</p>
-
-<!-- Project header / ribbon -->
-<div class="text-muted mb-3">
-  Created {{ project.created_at.strftime('%Y-%m-%d') }}
-  {% if project.creator %}by {{ project.creator.name or project.creator.email }}{% else %}(creator unknown){% endif %}
-  {% if project.visibility == 'public' %} · <span class="badge text-bg-success">Public</span>
-  {% elif project.visibility == 'private' %} · <span class="badge text-bg-secondary">Private</span>
-  {% else %} · <span class="badge text-bg-info">Inherits database</span>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <a href="{{ url_for('all_projects_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">&larr; Back to projects</a>
+  </div>
+  {% if lab_role and lab_role != 'viewer' %}
+  <div class="d-flex gap-2">
+    {% if can_manage %}
+    <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#editProjectModal">Edit Project</button>
+    {% endif %}
+    <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#createProjectModal">New Project</button>
+  </div>
   {% endif %}
 </div>
-<h2 class="mb-1 d-flex align-items-center gap-2">
-  {{ project.title }}
-  <span class="badge text-bg-info">
-    PI: {{ project.pi.name if project.pi else "Unassigned" }}
-  </span>
-</h2>
+
+<!-- Project header / ribbon -->
+<div class="d-flex justify-content-between align-items-start mb-2">
+  <div>
+    <div class="text-muted mb-2">
+      Created {{ project.created_at.strftime('%Y-%m-%d') }}
+      {% if project.creator %}
+        {% set creator_role = role_for_user(project.creator.id) %}
+        by <a href="{{ url_for('view_profile', user_id=project.creator.id) }}">{{ project.creator.name or project.creator.email }}</a>
+        {% if creator_role %}<span class="badge {{ creator_role|role_badge }} ms-1 text-uppercase">{{ creator_role|role_label }}</span>{% endif %}
+      {% else %}(creator unknown){% endif %}
+      {% if project.visibility == 'public' %} · <span class="badge text-bg-success">Public</span>
+      {% elif project.visibility == 'private' %} · <span class="badge text-bg-secondary">Private</span>
+      {% else %} · <span class="badge text-bg-info">Inherits database</span>
+      {% endif %}
+    </div>
+    <h2 class="mb-1 d-flex align-items-center gap-2">
+      {{ project.title }}
+      <span class="badge text-bg-info">
+        PI: {% if project.pi %}
+          {% set pi_role = role_for_user(project.pi.id) %}
+          <a class="link-dark" href="{{ url_for('view_profile', user_id=project.pi.id) }}">{{ project.pi.name }}</a>
+          {% if pi_role %}<span class="badge {{ pi_role|role_badge }} ms-1 text-uppercase">{{ pi_role|role_label }}</span>{% endif %}
+        {% else %}Unassigned{% endif %}
+      </span>
+    </h2>
+  </div>
+  <div class="d-flex gap-2">
+    {% if can_manage %}
+    <form method="post" action="{{ url_for('delete_project', project_id=project.id) }}" onsubmit="return confirm('Delete this project?');">
+      <button class="btn btn-sm btn-outline-danger">Delete</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+<div class="mb-3">
+  <small class="text-muted">Start: {{ project.start_date.strftime('%Y-%m-%d') if project.start_date else '—' }} · End: {{ project.end_date.strftime('%Y-%m-%d') if project.end_date else '—' }}</small>
+</div>
+
 {% if can_manage %}
-<div class="card card-body mb-3" id="project-pi">
-  <h5 class="mb-2">Principal Investigator</h5>
-  <form method="post" action="{{ url_for('set_project_pi', project_id=project.id) }}">
-    <div class="row g-2 align-items-end">
-      <div class="col-md-6">
-        <label class="form-label">Assign PI (database members)</label>
-        <select class="form-select" name="pi_user_id">
-          <option value="">— Unassigned —</option>
-          {% for u in pi_candidates %}
-            <option value="{{ u.id }}" {% if project.pi and project.pi.id == u.id %}selected{% endif %}>
-              {{ u.name or u.email }}
-            </option>
-          {% endfor %}
-        </select>
+<div class="modal fade" id="editProjectModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Edit Project Metadata</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
-      <div class="col-md-3">
-        <button class="btn btn-primary">Save</button>
+      <div class="modal-body">
+        <div class="mb-4">
+          <h6 class="mb-2">Assign PI</h6>
+          <form method="post" action="{{ url_for('set_project_pi', project_id=project.id) }}">
+            <div class="row g-2 align-items-end">
+              <div class="col-md-8">
+                <label class="form-label">Assign PI (all users)</label>
+                <select class="form-select" name="pi_user_id">
+                  <option value="">— Unassigned —</option>
+                  {% for u in pi_candidates %}
+                    <option value="{{ u.id }}" {% if project.pi and project.pi.id == u.id %}selected{% endif %}>
+                      {{ u.name or u.email }}
+                    </option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-md-4">
+                <button class="btn btn-primary">Save PI</button>
+              </div>
+            </div>
+          </form>
+        </div>
+
+        <div class="mb-4">
+          <h6 class="mb-2">Project Start / End Dates</h6>
+          <form method="post" action="{{ url_for('edit_project_dates', project_id=project.id) }}">
+            <div class="row g-2 align-items-end">
+              <div class="col-md-4">
+                <label class="form-label">Start date</label>
+                <input type="date" class="form-control" name="start_date" min="2020-01-01" value="{{ project.start_date.strftime('%Y-%m-%d') if project.start_date else '' }}">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label">End date</label>
+                <input type="date" class="form-control" id="projectEndDate" name="end_date" min="2020-01-01" value="{{ project.end_date.strftime('%Y-%m-%d') if project.end_date else '' }}">
+              </div>
+              <div class="col-md-4">
+                <div class="form-check mt-4">
+                  <input class="form-check-input" type="checkbox" id="projectCurrentCheck" name="is_current" value="yes" {% if not project.end_date %}checked{% endif %}>
+                  <label class="form-check-label" for="projectCurrentCheck">Current Project</label>
+                </div>
+              </div>
+              <div class="col-12">
+                <button class="btn btn-primary">Save dates</button>
+              </div>
+            </div>
+          </form>
+        </div>
+
+        <div>
+          <h6 class="mb-2">Project Slug</h6>
+          <form method="post" action="{{ url_for('update_project_slug', lab_slug=(current_lab.slug or current_lab.id), project_id=project.id) }}">
+            <div class="row g-2 align-items-end">
+              <div class="col-md-8">
+                <label class="form-label">Slug</label>
+                <input class="form-control" name="slug" value="{{ project.slug or '' }}" placeholder="e.g., corrosion-study">
+                <div class="form-text">Use lowercase letters, numbers, and hyphens only. Leave blank to clear.</div>
+              </div>
+              <div class="col-md-4">
+                <button class="btn btn-primary">Save slug</button>
+              </div>
+            </div>
+          </form>
+        </div>
       </div>
     </div>
-  </form>
+  </div>
 </div>
 {% endif %}
 
@@ -87,12 +173,20 @@
     <div class="card card-body mb-3">
       <div class="d-flex justify-content-between align-items-center mb-2">
         <h5 class="mb-0">Samples in this Project</h5>
-        <input id="sampleTreeFilter" class="form-control form-control-sm" placeholder="Filter by name…" style="max-width: 240px;">
+        <div class="d-flex gap-2">
+          {% if lab_role and lab_role != 'viewer' %}
+            <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#createProjectSampleModal">Create Sample</button>
+            {% if can_manage %}
+              <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#projectSampleClassModal">Add Sample Class</button>
+            {% endif %}
+          {% endif %}
+          <input id="sampleTreeFilter" class="form-control form-control-sm" placeholder="Filter by name…" style="max-width: 240px;">
+        </div>
       </div>
 
       {% macro render_sample_node(n) -%}
         <li class="mb-1 sample-node" data-name="{{ (n.name or '')|lower }}">
-          <a href="{{ url_for('view_sample', sample_id=n.id) }}">{{ n.name }}</a>
+          <a href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=project.id, sample_id=n.id) }}">{{ n.name }}</a>
           {% if n.children and n.children|length %}
             <ul class="mt-1">
               {% for c in n.children %}
@@ -103,12 +197,26 @@
         </li>
       {%- endmacro %}
 
-      {% if sample_tree and sample_tree|length %}
-        <ul id="sampleTreeRoot" class="mb-0">
-          {% for root in sample_tree %}
-            {{ render_sample_node(root) }}
+      {% if sample_tree_by_stock and sample_tree_by_stock|length %}
+        <div id="sampleTreeRoot">
+          {% for _, group in sample_tree_by_stock.items() %}
+            <div class="mb-3 sample-node" data-name="{{ group.label|lower }}">
+              <div class="d-flex align-items-center gap-2 fw-semibold">
+                {% if group.stock_id %}
+                  <a href="{{ url_for('view_stock_material', lab_slug=(current_lab.slug or current_lab.id), stock_id=group.stock_id) }}">{{ group.label }}</a>
+                  <span class="badge text-bg-info">Stock Material</span>
+                {% else %}
+                  <span>{{ group.label }}</span>
+                {% endif %}
+              </div>
+              <ul class="mb-2 mt-1">
+                {% for root in group.roots %}
+                  {{ render_sample_node(root) }}
+                {% endfor %}
+              </ul>
+            </div>
           {% endfor %}
-        </ul>
+        </div>
       {% else %}
         <p class="text-muted mb-0">No samples in this project yet.</p>
       {% endif %}
@@ -118,97 +226,13 @@
   <!-- Right: Attributes + Experiments -->
   <div class="col-lg-6">
 
-    <!-- Sample Attributes -->
-    <div class="card card-body mb-3">
-      <h5 class="mb-2">Sample Attributes</h5>
-
-      <ul class="list-group mb-3">
-        {% for a in project.sample_attributes|sort(attribute='sort_order') %}
-          <li class="list-group-item d-flex justify-content-between align-items-start">
-            <div>
-              <div class="fw-semibold">
-                {{ a.name }}
-                {% if a.unit %}
-                  <span class="badge bg-light text-muted ms-1">{{ a.unit }}</span>
-                {% endif %}
-              </div>
-              <div class="small text-muted">
-                type: {{ a.field_type }}{% if a.required %} · required{% endif %}
-                {% if a.field_type == 'select' and a.choices_json %}
-                  · choices: {{ a.choices_json }}
-                {% endif %}
-                {% if a.sort_order %} · order: {{ a.sort_order }}{% endif %}
-              </div>
-            </div>
-            <form method="post"
-                  action="{{ url_for('delete_sample_attribute', attr_id=a.id) }}"
-                  onsubmit="return confirm('Remove attribute? This will delete values from all samples in this project.');">
-              <button class="btn btn-sm btn-outline-danger">Remove</button>
-            </form>
-          </li>
-        {% else %}
-          <li class="list-group-item">No attributes defined yet.</li>
-        {% endfor %}
-      </ul>
-
-      <!-- Add attribute -->
-      <form method="post" action="{{ url_for('add_sample_attribute', project_id=project.id) }}">
-        <div class="row g-2">
-          <div class="col-md-3">
-            <label class="form-label">Name</label>
-            <input class="form-control" name="name" placeholder="e.g., Thickness" required>
-          </div>
-          <div class="col-md-2">
-            <label class="form-label">Field Type</label>
-            <select class="form-select" name="field_type" id="attr-field-type">
-              <option value="text">Text</option>
-              <option value="number">Number</option>
-              <option value="select">Select</option>
-              <option value="date">Date</option>
-            </select>
-          </div>
-          <div class="col-md-2">
-            <label class="form-label">Unit (optional)</label>
-            <input class="form-control" name="unit" list="unit-list" placeholder="e.g., mm">
-            <datalist id="unit-list">
-              <option>mm</option><option>µm</option><option>nm</option>
-              <option>°C</option><option>K</option>
-              <option>MPa</option><option>GPa</option>
-              <option>wt%</option><option>at%</option><option>mol%</option>
-              <option>hr</option><option>min</option><option>s</option>
-            </datalist>
-          </div>
-          <div class="col-md-3">
-            <label class="form-label">Choices (for Select)</label>
-            <input class="form-control" name="choices" id="attr-choices" placeholder="comma,separated,values" disabled>
-          </div>
-          <div class="col-md-1">
-            <label class="form-label">Order</label>
-            <input class="form-control" name="sort_order" type="number" value="0">
-          </div>
-          <div class="col-md-1 d-flex align-items-end">
-            <div class="form-check">
-              <input class="form-check-input" type="checkbox" id="attrRequired" name="required">
-              <label class="form-check-label" for="attrRequired">Req</label>
-            </div>
-          </div>
-        </div>
-        <div class="mt-2 small text-muted">
-          Removing an attribute deletes its values from all samples in this project.
-        </div>
-        <div class="mt-3">
-          <button class="btn btn-primary">Add Attribute</button>
-        </div>
-      </form>
-    </div>
-
     <!-- Experiments -->
     <div class="card card-body">
       <h5 class="mb-2">Experiments</h5>
 
       {% macro render_exp(node) -%}
         <li>
-          <a href="{{ url_for('view_experiment', experiment_id=node.id) }}">{{ node.title }}</a>
+          <a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=project.id, experiment_id=node.id) }}">{{ node.title }}</a>
           {% if node.children %}
             <ul>
               {% for c in node.children %}
@@ -250,9 +274,536 @@
   </div>
 </div>
 
+<!-- Create Sample Modal (project-scoped) -->
+<div class="modal fade" id="createProjectSampleModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('create_sample_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Create Sample</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="project_id" value="{{ project.id }}">
+
+          <div class="mb-3">
+            <label class="form-label">Split from Stock Material?</label>
+            <div class="d-flex gap-3">
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="from_stock" id="proj-from-stock-yes" value="yes">
+                <label class="form-check-label" for="proj-from-stock-yes">Yes</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="from_stock" id="proj-from-stock-no" value="no" checked>
+                <label class="form-check-label" for="proj-from-stock-no">No</label>
+              </div>
+            </div>
+          </div>
+
+          <div class="mb-3" id="proj-stock-wrap" style="display:none;">
+            <label class="form-label">Stock Material (lab inventory)</label>
+            <select class="form-select" id="proj-stock-select" name="stock_material_id">
+              <option value="">Select a stock material…</option>
+            </select>
+            <div class="form-text">Sample Class is inherited from the selected stock material. For child samples this is inherited from the root and cannot be changed.</div>
+            <div class="small text-muted mt-1" id="proj-stock-class-label"></div>
+          </div>
+
+            <div class="mb-3 border rounded p-2 bg-body-tertiary" id="proj-stock-tree" style="display:none;"></div>
+
+            <div class="mb-3" id="proj-sample-qty-wrap" style="display:none;">
+              <label class="form-label">Sample Quantity</label>
+              <div class="input-group">
+                <input class="form-control" id="proj-sample-qty" name="sample_quantity" type="number" step="any" min="0">
+                <span class="input-group-text" id="proj-sample-qty-unit"></span>
+              </div>
+            </div>
+
+            <div class="mb-3" id="proj-stock-old-qty-wrap" style="display:none;">
+              <label class="form-label">Old Stock Quantity</label>
+              <div class="input-group">
+                <input class="form-control" id="proj-stock-old-qty" type="number" step="any" readonly>
+                <span class="input-group-text" id="proj-stock-old-qty-unit"></span>
+              </div>
+            </div>
+
+          <div class="mb-3" id="proj-stock-qty-wrap" style="display:none;">
+            <label class="form-label">New Stock Quantity</label>
+              <div class="input-group">
+                <input class="form-control" id="proj-stock-new-qty" name="stock_new_quantity" type="number" step="any" min="0">
+                <span class="input-group-text" id="proj-stock-new-qty-unit"></span>
+              </div>
+            <div class="form-text">Required when splitting from stock material.</div>
+          </div>
+
+          <div class="mb-3" id="proj-parent-wrap" style="display:block;">
+            <label class="form-label">Parent Sample (optional)</label>
+            <select class="form-select" id="proj-parent-select" name="parent_id">
+              <option value="">(optional) Select a parent…</option>
+            </select>
+          </div>
+
+          <div class="mb-3 border rounded p-2 bg-body-tertiary" id="proj-parent-tree" style="display:block;"></div>
+
+          <div class="mb-3">
+            <label class="form-label">Sample Class (optional)</label>
+            <select class="form-select" id="proj-sample-class-select" name="sample_class_id">
+              <option value="">(none)</option>
+              {% for sc in sample_classes %}
+                <option value="{{ sc.id }}">{{ sc.name }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">If splitting from stock material, the class is inherited.</div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Sample Name</label>
+            <input class="form-control" name="name" required placeholder="e.g., SS316H Heat A">
+          </div>
+
+          <div class="mb-3" id="proj-class-attrs" style="display:none;">
+            <h6 class="mb-2">Sample Class Attributes</h6>
+            <div id="proj-class-attrs-fields"></div>
+            <div class="form-text">These fields come from the selected stock material’s Sample Class.</div>
+          </div>
+
+          <div class="mb-3" id="proj-attrs" style="display:none;">
+            <h6 class="mb-2">Project Attributes</h6>
+            <div id="proj-attrs-fields"></div>
+          </div>
+
+          <div class="row g-2">
+            <div class="col-md-8">
+              <label class="form-label">Link Experiment (optional)</label>
+              <select class="form-select" id="proj-experiment-select" name="experiment_id">
+                <option value="">(optional) Select an experiment…</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Notes (optional)</label>
+              <input class="form-control" name="notes" placeholder="notes">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-primary">Create Sample</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const currentCheck = document.getElementById('projectCurrentCheck');
+  const endDateInput = document.getElementById('projectEndDate');
+  if (currentCheck && endDateInput){
+    const syncEndDateState = () => {
+      const isCurrent = currentCheck.checked;
+      endDateInput.disabled = isCurrent;
+      if (isCurrent) endDateInput.value = '';
+    };
+    currentCheck.addEventListener('change', syncEndDateState);
+    syncEndDateState();
+  }
+})();
+</script>
+
+<script id="sample-data" type="application/json">{{ sample_opts | tojson }}</script>
+<script id="exp-data" type="application/json">{{ experiment_opts | tojson }}</script>
+<script id="stock-material-data" type="application/json">{{ stock_material_opts | tojson }}</script>
+
+<script>
+(function(){
+  const labSlug = "{{ current_lab.slug or current_lab.id }}";
+  const apiBase = labSlug ? `/lab/${labSlug}` : '';
+  const projectId = {{ project.id|tojson }};
+  const modal = document.getElementById('createProjectSampleModal');
+  const parentSel = document.getElementById('proj-parent-select');
+  const stockWrap = document.getElementById('proj-stock-wrap');
+  const stockSel = document.getElementById('proj-stock-select');
+  const stockClassLabel = document.getElementById('proj-stock-class-label');
+  const stockQtyWrap = document.getElementById('proj-stock-qty-wrap');
+  const stockQtyInput = document.getElementById('proj-stock-new-qty');
+  const stockQtyUnit = document.getElementById('proj-stock-new-qty-unit');
+  const oldQtyWrap = document.getElementById('proj-stock-old-qty-wrap');
+  const oldQtyInput = document.getElementById('proj-stock-old-qty');
+  const oldQtyUnit = document.getElementById('proj-stock-old-qty-unit');
+  const sampleQtyWrap = document.getElementById('proj-sample-qty-wrap');
+  const sampleQtyInput = document.getElementById('proj-sample-qty');
+  const sampleQtyUnit = document.getElementById('proj-sample-qty-unit');
+  const fromStockYes = document.getElementById('proj-from-stock-yes');
+  const fromStockNo = document.getElementById('proj-from-stock-no');
+  const stockTree = document.getElementById('proj-stock-tree');
+  const parentWrap = document.getElementById('proj-parent-wrap');
+  const parentTree = document.getElementById('proj-parent-tree');
+  const classSel = document.getElementById('proj-sample-class-select');
+  const classWrap = document.getElementById('proj-class-attrs');
+  const classFields = document.getElementById('proj-class-attrs-fields');
+  const projWrap = document.getElementById('proj-attrs');
+  const projFields = document.getElementById('proj-attrs-fields');
+  const expSel = document.getElementById('proj-experiment-select');
+
+  let sampleData = [];
+  let expData = [];
+  let stockData = [];
+  try { sampleData = JSON.parse(document.getElementById('sample-data').textContent || '[]'); } catch(_) {}
+  try { expData = JSON.parse(document.getElementById('exp-data').textContent || '[]'); } catch(_) {}
+  try { stockData = JSON.parse(document.getElementById('stock-material-data').textContent || '[]'); } catch(_) {}
+
+  function slugify(name){
+    return (name || '').toLowerCase().replace(/[^0-9a-z]+/g, '_').replace(/^_+|_+$/g, '');
+  }
+
+  function inputForAttr(a, namePrefix, key, opts) {
+    const lock = opts && opts.lock;
+    const value = opts && Object.prototype.hasOwnProperty.call(opts, 'value') ? opts.value : undefined;
+    const field = document.createElement('div');
+    field.className = 'mb-2';
+    if (a.inherited) field.setAttribute('data-inherited', 'true');
+    const label = document.createElement('label');
+    label.className = 'form-label';
+    label.textContent = a.name + (a.unit ? ` (${a.unit})` : '');
+    const type = a.field_type || a.type || 'text';
+    let input;
+    if (type === 'select') {
+      input = document.createElement('select');
+      input.className = 'form-select';
+      const choices = (a.choices || a.options || []);
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = '(select)';
+      input.appendChild(empty);
+      choices.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c;
+        opt.textContent = c;
+        input.appendChild(opt);
+      });
+      if (value !== undefined) input.value = value;
+    } else {
+      input = document.createElement('input');
+      input.className = 'form-control';
+      input.type = (type === 'number' ? 'number' : type === 'date' ? 'date' : 'text');
+      if (type === 'number') {
+        input.step = 'any';
+        input.max = '1000000000';
+      } else if (type !== 'date') {
+        input.maxLength = 200;
+      }
+      if (value !== undefined) input.value = value;
+    }
+    input.name = `${namePrefix}${key}`;
+    if (a.required) input.required = true;
+    if (lock) {
+      input.disabled = true;
+      input.required = false;
+    }
+    field.appendChild(label);
+    field.appendChild(input);
+    return field;
+  }
+
+  async function loadProjectAttrs(){
+    try{
+      const resp = await fetch(`${apiBase}/api/project/${projectId}/sample-attrs`);
+      const attrs = await resp.json();
+      projFields.innerHTML = '';
+      if (attrs && attrs.length){
+        attrs.forEach(a => projFields.appendChild(inputForAttr(a, 'attr_', a.id, { lock: false })));
+        projWrap.style.display = '';
+      } else {
+        projWrap.style.display = 'none';
+      }
+    }catch(e){
+      projWrap.style.display = 'none';
+    }
+  }
+
+  async function loadClassAttrs(classId, valuesMap, lock){
+    classFields.innerHTML = '';
+    if (!classId){
+      classWrap.style.display = 'none';
+      return;
+    }
+    try{
+      const resp = await fetch(`${apiBase}/api/project/${projectId}/sample-class/${classId}/attrs`);
+      const attrs = await resp.json();
+      if (attrs && attrs.length){
+        attrs.forEach(a => {
+          const key = slugify(a.name);
+          const val = valuesMap && Object.prototype.hasOwnProperty.call(valuesMap, a.name) ? valuesMap[a.name] : undefined;
+          classFields.appendChild(inputForAttr(a, 'sc_', key, { value: val, lock: !!lock }));
+        });
+        classWrap.style.display = '';
+      } else {
+        classWrap.style.display = 'none';
+      }
+    }catch(e){
+      classWrap.style.display = 'none';
+    }
+  }
+
+  function resetSel(sel, placeholder){
+    sel.innerHTML = '';
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = placeholder || '';
+    sel.appendChild(opt);
+  }
+
+  function populateParents(){
+    resetSel(parentSel, '(optional) Select a parent…');
+    sampleData.filter(s => s.project_id === Number(projectId)).forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.id; opt.textContent = s.name;
+      parentSel.appendChild(opt);
+    });
+  }
+
+  function populateExperiments(){
+    resetSel(expSel, '(optional) Select an experiment…');
+    expData.filter(e => e.project_id === Number(projectId)).forEach(e => {
+      const opt = document.createElement('option');
+      opt.value = e.id; opt.textContent = e.title;
+      expSel.appendChild(opt);
+    });
+  }
+
+  function populateStockMaterials(){
+    resetSel(stockSel, 'Select a stock material…');
+    stockData.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.lot_number ? `${m.name} — ${m.lot_number}` : m.name;
+      stockSel.appendChild(opt);
+    });
+  }
+
+  function buildStockTree(){
+    if (!stockTree) return;
+    stockTree.innerHTML = '';
+    if (!stockData || !stockData.length){
+      stockTree.innerHTML = '<div class="text-muted small">No stock materials available.</div>';
+      return;
+    }
+    const groups = {};
+    stockData.forEach(m => {
+      const cls = m.sample_class_name || 'Unclassified';
+      groups[cls] = groups[cls] || [];
+      groups[cls].push(m);
+    });
+    const classNames = Object.keys(groups).sort((a,b) => (a==='Unclassified') - (b==='Unclassified') || a.localeCompare(b));
+    classNames.forEach(cn => {
+      const section = document.createElement('div');
+      section.className = 'mb-2';
+      const header = document.createElement('div');
+      header.className = 'fw-semibold small text-uppercase text-muted';
+      header.textContent = cn;
+      section.appendChild(header);
+      const list = document.createElement('div');
+      groups[cn].forEach(m => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-sm btn-outline-secondary me-2 mb-2';
+        btn.textContent = m.lot_number ? `${m.name} — ${m.lot_number}` : m.name;
+        btn.addEventListener('click', () => {
+          stockSel.value = m.id;
+          updateStockClassAttrs();
+        });
+        list.appendChild(btn);
+      });
+      section.appendChild(list);
+      stockTree.appendChild(section);
+    });
+  }
+
+  function buildParentTree(){
+    if (!parentTree) return;
+    parentTree.innerHTML = '';
+    const groups = {};
+    const projectSamples = sampleData.filter(s => s.project_id === Number(projectId));
+    if (!projectSamples.length){
+      parentTree.innerHTML = '<div class="text-muted small">No samples available.</div>';
+      return;
+    }
+    projectSamples.forEach(s => {
+      const stock = stockData.find(m => m.id === s.stock_material_id);
+      const cls = (stock && stock.sample_class_name) ? stock.sample_class_name : 'Unclassified';
+      groups[cls] = groups[cls] || [];
+      groups[cls].push(s);
+    });
+    const classNames = Object.keys(groups).sort((a,b) => (a==='Unclassified') - (b==='Unclassified') || a.localeCompare(b));
+    classNames.forEach(cn => {
+      const section = document.createElement('div');
+      section.className = 'mb-2';
+      const header = document.createElement('div');
+      header.className = 'fw-semibold small text-uppercase text-muted';
+      header.textContent = cn;
+      section.appendChild(header);
+      const list = document.createElement('div');
+      groups[cn].forEach(s => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-sm btn-outline-secondary me-2 mb-2';
+        btn.textContent = s.name;
+        btn.addEventListener('click', () => {
+          parentSel.value = s.id;
+          const pObj = sampleData.find(x => x.id === Number(s.id));
+          if (pObj && pObj.stock_material_id) {
+            try { stockSel.value = pObj.stock_material_id; } catch(e) {}
+          }
+          stockSel.disabled = true;
+          updateStockClassAttrs();
+        });
+        list.appendChild(btn);
+      });
+      section.appendChild(list);
+      parentTree.appendChild(section);
+    });
+  }
+
+  function updateStockClassAttrs(){
+    const stockId = Number(stockSel.value || 0);
+    const stock = stockData.find(s => s.id === stockId);
+    const classId = stock ? stock.sample_class_id : null;
+    const classAttrs = stock && stock.class_attrs ? stock.class_attrs : null;
+    if (stockClassLabel){
+      stockClassLabel.textContent = classId && stock && stock.sample_class_name ? `Sample Class: ${stock.sample_class_name}` : '';
+    }
+    if (oldQtyInput){
+      oldQtyInput.value = (stock && stock.quantity !== null && stock.quantity !== undefined) ? stock.quantity : '';
+    }
+    if (oldQtyUnit) oldQtyUnit.textContent = stock && stock.unit ? stock.unit : '';
+    if (stockQtyUnit) stockQtyUnit.textContent = stock && stock.unit ? stock.unit : '';
+    if (sampleQtyUnit) sampleQtyUnit.textContent = stock && stock.unit ? stock.unit : '';
+    if (classId){
+      if (classSel) classSel.value = String(classId);
+      loadClassAttrs(classId, classAttrs, !!classAttrs);
+    } else {
+      loadClassAttrs(null);
+    }
+  }
+
+  function syncStockOrigin(){
+    const wantsStock = fromStockYes && fromStockYes.checked;
+    const hasParent = parentSel && parentSel.value;
+    buildParentTree();
+    if (stockWrap) stockWrap.style.display = wantsStock ? 'block' : 'none';
+    if (stockTree) stockTree.style.display = wantsStock ? 'block' : 'none';
+    if (sampleQtyWrap) sampleQtyWrap.style.display = wantsStock ? 'block' : 'none';
+    if (oldQtyWrap) oldQtyWrap.style.display = wantsStock ? 'block' : 'none';
+    if (stockQtyWrap) stockQtyWrap.style.display = wantsStock ? 'block' : 'none';
+    if (parentWrap) parentWrap.style.display = wantsStock ? 'none' : 'block';
+    if (parentTree) parentTree.style.display = wantsStock ? 'none' : 'block';
+    if (stockSel){
+      stockSel.required = wantsStock;
+      if (!wantsStock) stockSel.value = '';
+    }
+    if (stockQtyInput){
+      stockQtyInput.required = wantsStock;
+      if (!wantsStock) stockQtyInput.value = '';
+    }
+    if (sampleQtyInput){
+      sampleQtyInput.required = wantsStock;
+      if (!wantsStock) sampleQtyInput.value = '';
+    }
+    if (!wantsStock){
+      if (oldQtyInput) oldQtyInput.value = '';
+      if (oldQtyUnit) oldQtyUnit.textContent = '';
+      if (stockQtyUnit) stockQtyUnit.textContent = '';
+      if (sampleQtyUnit) sampleQtyUnit.textContent = '';
+    }
+    if (classSel){
+      classSel.disabled = wantsStock || !!hasParent;
+      if (wantsStock) classSel.value = '';
+    }
+    if (!wantsStock){
+      if (stockClassLabel) stockClassLabel.textContent = '';
+      if (!classSel || !classSel.value) loadClassAttrs(null);
+    }
+  }
+
+  if (modal){
+    modal.addEventListener('shown.bs.modal', function(){
+      loadProjectAttrs();
+      populateParents();
+      populateExperiments();
+      populateStockMaterials();
+      buildStockTree();
+      syncStockOrigin();
+      updateStockClassAttrs();
+    });
+  }
+  if (parentSel){
+    parentSel.addEventListener('change', function(){
+      const parentId = Number(this.value || 0);
+      if (parentId){
+        const pObj = sampleData.find(s => s.id === Number(parentId));
+        if (pObj && pObj.stock_material_id) {
+          try { stockSel.value = pObj.stock_material_id; } catch(e) {}
+        } else {
+          stockSel.value = '';
+        }
+        stockSel.disabled = true;
+        if (classSel) classSel.disabled = true;
+        fetch(`${apiBase}/api/sample/${parentId}/attr-values`).then(r=>r.json()).then(map=>{
+          const groups = document.querySelectorAll('#proj-attrs-fields .mb-2');
+          groups.forEach(g=>{
+            const input = g.querySelector('input, select');
+            if(!input) return;
+            const name = input.name || '';
+            const m = name.match(/^attr_(\d+)$/);
+            if (!m) return;
+            const isInherited = g.getAttribute('data-inherited') === 'true';
+            if (isInherited){
+              input.value = map[m[1]] || '';
+              input.disabled = true;
+              input.required = false;
+            } else {
+              input.disabled = false;
+            }
+          });
+        }).catch(()=>{});
+      } else {
+        stockSel.disabled = false;
+        if (classSel) classSel.disabled = (fromStockYes && fromStockYes.checked);
+        const groups = document.querySelectorAll('#proj-attrs-fields .mb-2');
+        groups.forEach(g=>{
+          const input = g.querySelector('input, select'); if(!input) return;
+          const isInherited = g.getAttribute('data-inherited') === 'true';
+          if (isInherited) {
+            input.value = '';
+            input.disabled = false;
+          }
+        });
+      }
+      updateStockClassAttrs();
+    });
+  }
+  if (stockSel){
+    stockSel.addEventListener('change', updateStockClassAttrs);
+  }
+  if (classSel){
+    classSel.addEventListener('change', function(){
+      const id = Number(this.value || 0);
+      if (!id) return loadClassAttrs(null);
+      loadClassAttrs(id, null, false);
+    });
+  }
+  if (fromStockYes && fromStockNo){
+    fromStockYes.addEventListener('change', syncStockOrigin);
+    fromStockNo.addEventListener('change', syncStockOrigin);
+  }
+})();
+</script>
+
 <!-- Tiny script: enable/disable Choices by field type -->
 <script>
 (function(){
+  const labSlug = "{{ current_lab.slug or current_lab.id }}";
+  const apiBase = labSlug ? `/lab/${labSlug}` : '';
   const sel = document.getElementById('attr-field-type');
   const choices = document.getElementById('attr-choices');
   if (!sel || !choices) return;
@@ -279,5 +830,547 @@
   }
 })();
 </script>
+
+<!-- Project Sample Class modal + builder -->
+<div class="modal fade" id="projectSampleClassModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+  <form method="post" id="psc-form" action="{{ url_for('add_project_sample_class', project_id=project.id) }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Add / Customize Sample Class</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="psc_id" id="psc-id-input">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label">Lab Sample Class</label>
+              <select class="form-select" name="sample_class_id" id="psc-class-select" required>
+                <option value="">Select a sample class…</option>
+                {% for sc in sample_classes %}
+                  <option value="{{ sc.id }}">{{ sc.name }}</option>
+                {% endfor %}
+              </select>
+              <div class="form-text" id="psc-required-hint"></div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Name Override (optional)</label>
+              <input class="form-control" name="name_override" id="psc-name-override">
+            </div>
+          </div>
+
+          <hr>
+          <h6>Required Attributes</h6>
+          <div id="psc-lab-attrs" class="mb-2"></div>
+          <div class="form-text mb-3">These required attributes are defined at the lab level and cannot be changed here.</div>
+
+          <h6>Project Attributes (additions only)</h6>
+          <div id="psc-attrs-builder" class="mb-2"></div>
+          <button type="button" id="psc-add-attr" class="btn btn-sm btn-outline-primary mb-2">+ Add attribute</button>
+          <input type="hidden" name="attributes" id="psc-attributes-input">
+          <div class="form-text">Add project-only attributes. These will be merged with lab-level attributes.</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Project Timeline -->
+<div class="card card-body mt-3">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h5 class="mb-0">Project Timeline</h5>
+    <div>
+      <button id="timelineFilterToggle" class="btn btn-sm btn-outline-secondary">Filters</button>
+    </div>
+  </div>
+
+  <div id="timelineFilters" class="mb-3" style="display:none">
+    <div class="form-check form-check-inline">
+      <input class="form-check-input tl-filter" type="checkbox" id="tf-project" value="project_start,project_end" checked>
+      <label class="form-check-label" for="tf-project">Project start/end</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input tl-filter" type="checkbox" id="tf-samples" value="sample_created" checked>
+      <label class="form-check-label" for="tf-samples">Samples</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input tl-filter" type="checkbox" id="tf-maint" value="maintenance" checked>
+      <label class="form-check-label" for="tf-maint">Maintenance</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input tl-filter" type="checkbox" id="tf-cal" value="calibration" checked>
+      <label class="form-check-label" for="tf-cal">Calibration</label>
+    </div>
+    <div class="form-check form-check-inline">
+      <input class="form-check-input tl-filter" type="checkbox" id="tf-meas" value="measurement" checked>
+      <label class="form-check-label" for="tf-meas">Measurements</label>
+    </div>
+  </div>
+
+  <div id="timelineContainer">
+    <p class="text-muted">Loading timeline…</p>
+  </div>
+</div>
+
+<script>
+(function(){
+  const labSlug = "{{ current_lab.slug or current_lab.id }}";
+  const apiBase = labSlug ? `/lab/${labSlug}` : '';
+  const toggle = document.getElementById('timelineFilterToggle');
+  const filters = document.getElementById('timelineFilters');
+  const projectId = {{ project.id|tojson }};
+  toggle && toggle.addEventListener('click', () => {
+    if (!filters) return;
+    filters.style.display = filters.style.display === 'none' ? '' : 'none';
+  });
+
+  function getActiveTypes() {
+    const els = document.querySelectorAll('.tl-filter');
+    const out = new Set();
+    els.forEach(el => {
+      if (el.checked) {
+        (el.value || '').split(',').map(v => v.trim()).filter(Boolean).forEach(v => out.add(v));
+      }
+    });
+    out.add('experiment_start');
+    out.add('experiment_end');
+    return out;
+  }
+
+  const projectStartMonth = '{{ project.start_date.strftime("%Y-%m") if project.start_date else "" }}';
+  const projectEndMonth = '{{ project.end_date.strftime("%Y-%m") if project.end_date else "" }}';
+
+  function renderTimeline(data) {
+    const container = document.getElementById('timelineContainer');
+    container.innerHTML = '';
+    const months = Object.keys(data).sort().reverse();
+    if (!months.length) {
+      container.innerHTML = '<p class="text-muted">No timeline events yet.</p>';
+      return;
+    }
+    // store loaded timeline data globally so navigation can inspect months
+    window._tl_data = data;
+    const active = getActiveTypes();
+
+    const minFromData = months[months.length - 1];
+    const maxFromData = months[0];
+    const minMonth = projectStartMonth || minFromData;
+    const maxMonth = projectEndMonth || maxFromData;
+    if (monthPicker) {
+      monthPicker.min = minMonth;
+      monthPicker.max = maxMonth;
+      if (!monthPicker.value) monthPicker.value = projectStartMonth || maxFromData;
+    }
+
+    const m = (monthPicker && monthPicker.value) ? monthPicker.value : (projectStartMonth || maxFromData);
+    const box = document.createElement('div');
+    box.className = 'mb-3 border rounded p-2';
+    box.id = `month-${m}`;
+
+    const [yearStr, monthStr] = m.split('-');
+    const year = Number(yearStr);
+    const monthIndex0 = Number(monthStr) - 1;
+
+    const h = document.createElement('h6');
+    const monthLabel = new Date(Date.UTC(year, monthIndex0, 1)).toLocaleString(undefined, { month: 'long', year: 'numeric' });
+    h.textContent = monthLabel;
+    box.appendChild(h);
+    const first = new Date(Date.UTC(year, monthIndex0, 1));
+    const last = new Date(Date.UTC(year, monthIndex0 + 1, 0));
+    const daysInMonth = last.getUTCDate();
+    const startDay = first.getUTCDay(); // 0=Sun
+
+    const eventsByDay = {};
+    const projectStart = '{{ project.start_date.strftime("%Y-%m-%d") if project.start_date else "" }}';
+    const todayKey = new Date().toISOString().slice(0, 10);
+    (data[m] || []).forEach(ev => {
+      if (!active.has(ev.type)) return;
+      const dayKey = (ev.timestamp || '').slice(0, 10);
+      if (!eventsByDay[dayKey]) eventsByDay[dayKey] = [];
+      eventsByDay[dayKey].push(ev);
+    });
+
+    const table = document.createElement('table');
+    table.className = 'table table-sm table-bordered mb-0';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th class="text-center">Sun</th><th class="text-center">Mon</th><th class="text-center">Tue</th><th class="text-center">Wed</th><th class="text-center">Thu</th><th class="text-center">Fri</th><th class="text-center">Sat</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+
+    let day = 1 - startDay;
+    for (let week = 0; week < 6; week++) {
+      const tr = document.createElement('tr');
+      for (let d = 0; d < 7; d++) {
+        const td = document.createElement('td');
+        td.style.verticalAlign = 'top';
+        td.style.minWidth = '120px';
+        td.style.height = '90px';
+        if (day < 1 || day > daysInMonth) {
+          td.className = 'bg-body-tertiary';
+          tr.appendChild(td);
+          day++;
+          continue;
+        }
+        const dayStr = String(day).padStart(2, '0');
+        const dateKey = `${m}-${dayStr}`;
+        const header = document.createElement('div');
+        header.className = 'fw-semibold small mb-1';
+        header.textContent = day;
+        td.appendChild(header);
+
+        if (projectStart && dateKey < projectStart) {
+          td.classList.add('bg-body-tertiary');
+          td.classList.add('text-muted');
+        }
+
+        if (dateKey === todayKey) {
+          td.classList.add('bg-warning-subtle');
+          td.classList.add('border');
+          td.classList.add('border-warning');
+        }
+
+        const evs = eventsByDay[dateKey] || [];
+        evs.forEach(ev => {
+          const item = document.createElement('div');
+          item.className = 'small text-truncate';
+          const typeLabel = (ev.type || '').replace('_', ' ');
+          const label = `${(ev.timestamp || '').slice(11,16)} · ${typeLabel} · ${ev.title}`;
+          if (ev.url) {
+            const a = document.createElement('a');
+            a.href = ev.url;
+            a.textContent = label;
+            item.appendChild(a);
+          } else {
+            item.textContent = label;
+          }
+          td.appendChild(item);
+        });
+
+        tr.appendChild(td);
+        day++;
+      }
+      tbody.appendChild(tr);
+      if (day > daysInMonth) break;
+    }
+
+    table.appendChild(tbody);
+    box.appendChild(table);
+    container.appendChild(box);
+  }
+
+  async function loadTimeline(){
+    const types = Array.from(getActiveTypes()).join(',');
+    const url = `${apiBase}/project/${projectId}/timeline` + (types ? `?types=${encodeURIComponent(types)}` : '');
+    const res = await fetch(url);
+    if (res.ok){
+      const data = await res.json();
+      renderTimeline(data);
+    } else {
+      document.getElementById('timelineContainer').innerHTML = '<p class="text-danger">Failed to load timeline.</p>';
+    }
+  }
+
+  // month navigation controls
+  const navBar = document.createElement('div');
+  navBar.className = 'mb-2 d-flex flex-wrap align-items-center gap-2';
+  const btnPrev = document.createElement('button'); btnPrev.className='btn btn-sm btn-outline-secondary'; btnPrev.textContent='Prev';
+  const monthPicker = document.createElement('input');
+  monthPicker.type = 'month';
+  monthPicker.className = 'form-control form-control-sm';
+  monthPicker.style.maxWidth = '180px';
+  monthPicker.setAttribute('aria-label', 'Select month');
+  const btnNext = document.createElement('button'); btnNext.className='btn btn-sm btn-outline-secondary'; btnNext.textContent='Next';
+  const btnJump = document.createElement('button'); btnJump.className='btn btn-sm btn-outline-primary'; btnJump.textContent='Project Start';
+  const btnToday = document.createElement('button'); btnToday.className='btn btn-sm btn-outline-secondary'; btnToday.textContent='Today';
+  navBar.appendChild(btnPrev); navBar.appendChild(monthPicker); navBar.appendChild(btnNext); navBar.appendChild(btnJump); navBar.appendChild(btnToday);
+  const containerWrap = document.getElementById('timelineContainer');
+  containerWrap.parentNode.insertBefore(navBar, containerWrap);
+
+  function visibleMonths(){ return Array.from(Object.keys(window._tl_data || {}).sort().reverse()); }
+  function monthIndexValue(ym){
+    const parts = (ym || '').split('-');
+    if (parts.length !== 2) return null;
+    const y = Number(parts[0]);
+    const m = Number(parts[1]);
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
+    return y * 12 + (m - 1);
+  }
+  function addMonths(ym, delta){
+    const parts = (ym || '').split('-');
+    if (parts.length !== 2) return null;
+    let y = Number(parts[0]);
+    let m = Number(parts[1]);
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
+    m = m - 1 + delta;
+    y = y + Math.floor(m / 12);
+    m = (m % 12 + 12) % 12;
+    const mm = String(m + 1).padStart(2, '0');
+    return `${y}-${mm}`;
+  }
+  function jumpToSelectedMonth(){
+    const val = monthPicker.value; // YYYY-MM
+    if (!val) return;
+    const months = visibleMonths();
+    const idx = months.indexOf(val);
+    if (idx >= 0) {
+      if (monthPicker) monthPicker.value = months[idx];
+      return renderTimeline(window._tl_data || {});
+    }
+    const target = monthIndexValue(val);
+    if (target == null) return;
+    let bestIdx = -1;
+    let bestDiff = Infinity;
+    months.forEach((m, i) => {
+      const mi = monthIndexValue(m);
+      if (mi == null) return;
+      const diff = Math.abs(mi - target);
+      if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+    });
+    if (bestIdx >= 0) {
+      if (monthPicker) monthPicker.value = months[bestIdx];
+      renderTimeline(window._tl_data || {});
+    }
+  }
+  monthPicker.addEventListener('change', jumpToSelectedMonth);
+  monthPicker.addEventListener('input', jumpToSelectedMonth);
+
+  function stepMonth(delta){
+    if (!monthPicker || !monthPicker.value) return;
+    const next = addMonths(monthPicker.value, delta);
+    if (!next) return;
+    const min = monthPicker.min || projectStartMonth || '';
+    const max = monthPicker.max || projectEndMonth || '';
+    const nextIdx = monthIndexValue(next);
+    const minIdx = monthIndexValue(min);
+    const maxIdx = monthIndexValue(max);
+    if (minIdx != null && nextIdx < minIdx) return;
+    if (maxIdx != null && nextIdx > maxIdx) return;
+    monthPicker.value = next;
+    renderTimeline(window._tl_data || {});
+  }
+  btnPrev.addEventListener('click', ()=> stepMonth(-1));
+  btnNext.addEventListener('click', ()=> stepMonth(1));
+  btnJump.addEventListener('click', ()=> {
+    // jump to project start month
+    const projMonth = projectStartMonth || '{{ project.created_at.strftime("%Y-%m") }}';
+    if (monthPicker) monthPicker.value = projMonth;
+    renderTimeline(window._tl_data || {});
+  });
+  btnToday.addEventListener('click', ()=> {
+    const todayMonth = new Date().toISOString().slice(0, 7);
+    if (monthPicker) monthPicker.value = todayMonth;
+    renderTimeline(window._tl_data || {});
+  });
+
+  document.querySelectorAll('.tl-filter').forEach(el => el.addEventListener('change', loadTimeline));
+  loadTimeline();
+})();
+</script>
+<script>
+(function(){
+  const labSlug = "{{ current_lab.slug or current_lab.id }}";
+  const apiBase = labSlug ? `/lab/${labSlug}` : '';
+  // Builder functions (similar to samples page)
+  const builder = document.getElementById('psc-attrs-builder');
+  const addBtn = document.getElementById('psc-add-attr');
+  const hiddenInput = document.getElementById('psc-attributes-input');
+  const classSel = document.getElementById('psc-class-select');
+  const pscForm = document.getElementById('psc-form');
+  const pscIdInput = document.getElementById('psc-id-input');
+  const labAttrsBox = document.getElementById('psc-lab-attrs');
+  const requiredHint = document.getElementById('psc-required-hint');
+  let labClassesCache = null;
+
+  async function loadLabClasses(){
+    if (labClassesCache) return labClassesCache;
+    try{
+      const resp = await fetch(`${apiBase}/api/sample-classes`);
+      const data = await resp.json();
+      labClassesCache = Array.isArray(data) ? data : [];
+    }catch(e){
+      labClassesCache = [];
+    }
+    return labClassesCache;
+  }
+
+  async function renderLabAttrsForClass(classId){
+    if (!labAttrsBox) return;
+    labAttrsBox.innerHTML = '';
+    if (!classId) return;
+    const classes = await loadLabClasses();
+    const sc = classes.find(c => Number(c.id) === Number(classId));
+    const attrs = (sc && sc.attributes) ? sc.attributes.filter(a => a && a.required) : [];
+    if (!attrs.length){
+      labAttrsBox.innerHTML = '<div class="text-muted small">No required attributes.</div>';
+      return;
+    }
+    attrs.forEach(a => {
+      const row = document.createElement('div');
+      row.className = 'd-flex justify-content-between align-items-center border rounded px-2 py-1 mb-1 small bg-body-tertiary';
+      const left = document.createElement('div');
+      left.innerHTML = `<span class="fw-semibold">${a.name}</span>${a.unit ? ` (${a.unit})` : ''}`;
+      const right = document.createElement('div');
+      right.className = 'text-muted';
+      right.textContent = a.required ? 'Required' : 'Optional';
+      row.appendChild(left);
+      row.appendChild(right);
+      labAttrsBox.appendChild(row);
+    });
+  }
+
+  function setRequiredHint(attrs){
+    if (!requiredHint) return;
+    const required = (attrs || []).filter(a => a && a.required).map(a => a.name).filter(Boolean);
+    if (!required.length){
+      requiredHint.textContent = 'No required attributes.';
+      return;
+    }
+    requiredHint.textContent = `Required: ${required.join(', ')}`;
+  }
+
+  function makeAttrRow(attr){
+    const uid = 'a_' + Math.random().toString(36).slice(2,8);
+    const div = document.createElement('div'); div.className='row g-2 align-items-end mb-2 sc-attr-row';
+    div.innerHTML = `
+      <div class="col-md-4"><input class="form-control sc-attr-name" placeholder="Attribute name" value="${attr&&attr.name?attr.name:''}" required></div>
+      <div class="col-md-2"><select class="form-select sc-attr-type"><option value="text">Text</option><option value="number">Number</option><option value="select">Select</option><option value="date">Date</option></select></div>
+      <div class="col-md-2"><input class="form-control sc-attr-unit" placeholder="Unit (opt)" value="${attr && attr.unit?attr.unit:''}"></div>
+      <div class="col-md-2"><input class="form-control sc-attr-choices" placeholder="comma,separated (for select)" value="${attr && attr.choices? (Array.isArray(attr.choices)?attr.choices.join(','):attr.choices):''}" ${attr && attr.field_type !== 'select'? 'disabled':''}></div>
+      <div class="col-md-1 d-flex align-items-center">
+        <div class="form-check">
+          <input id="${uid}-req" class="form-check-input sc-attr-required" type="checkbox" ${attr&&attr.required?'checked':''}>
+          <label class="form-check-label" for="${uid}-req">Req</label>
+        </div>
+      </div>
+      <div class="col-md-1 d-flex align-items-center">
+        <div class="form-check">
+          <input id="${uid}-inh" class="form-check-input sc-attr-inherit" type="checkbox" ${attr&&attr.inherited?'checked':''}>
+          <label class="form-check-label" for="${uid}-inh">Inh</label>
+        </div>
+      </div>
+      <div class="col-md-1"><button type="button" class="btn btn-sm btn-outline-danger sc-attr-remove">Remove</button></div>
+    `;
+    if (attr && attr.field_type) div.querySelector('.sc-attr-type').value = attr.field_type;
+    const typeSel = div.querySelector('.sc-attr-type'); const choicesInput = div.querySelector('.sc-attr-choices');
+    typeSel.addEventListener('change', function(){ const isSelect = this.value==='select'; choicesInput.disabled = !isSelect; if(!isSelect) choicesInput.value='';});
+    div.querySelector('.sc-attr-remove').addEventListener('click', function(){ div.remove(); serializeAttrs(); });
+    return div;
+  }
+
+  function serializeAttrs(){
+    const rows = builder.querySelectorAll('.sc-attr-row');
+    const out = [];
+    rows.forEach(r=>{
+      const name = (r.querySelector('.sc-attr-name').value || '').trim();
+      if (!name) return;
+      const field_type = r.querySelector('.sc-attr-type').value;
+      const unit = (r.querySelector('.sc-attr-unit').value || '').trim() || null;
+      const rawChoices = (r.querySelector('.sc-attr-choices').value || '').trim();
+      const choices = rawChoices ? rawChoices.split(',').map(s=>s.trim()).filter(Boolean) : null;
+      const required = r.querySelector('.sc-attr-required').checked;
+      const inherited = !!r.querySelector('.sc-attr-inherit') && r.querySelector('.sc-attr-inherit').checked;
+      const obj = { name, field_type, required, inherited };
+      if (unit) obj.unit = unit;
+      if (choices) obj.choices = choices;
+      out.push(obj);
+    });
+    hiddenInput.value = JSON.stringify(out);
+    return out;
+  }
+
+  addBtn.addEventListener('click', ()=> builder.appendChild(makeAttrRow()));
+
+  // when modal opens for add or customize
+  const modalEl = document.getElementById('projectSampleClassModal');
+  modalEl.addEventListener('show.bs.modal', function(e){
+    const trigger = e.relatedTarget;
+    const pscData = trigger && trigger.getAttribute ? trigger.getAttribute('data-psc') : null;
+    builder.innerHTML = '';
+    pscIdInput.value = '';
+    document.getElementById('psc-name-override').value = '';
+    classSel.value = '';
+    setRequiredHint([]);
+    if (pscData){
+      try{
+        const obj = JSON.parse(pscData);
+        pscIdInput.value = obj.id || '';
+        if (obj.sample_class_id) classSel.value = obj.sample_class_id;
+        if (obj.name_override) document.getElementById('psc-name-override').value = obj.name_override;
+        if (obj.attributes_override_json){
+          let attrs = [];
+          try{ attrs = JSON.parse(obj.attributes_override_json); }catch(e){}
+          if (attrs && attrs.length){ attrs.forEach(a=> builder.appendChild(makeAttrRow(a))); serializeAttrs(); }
+          setRequiredHint(attrs);
+        } else {
+          setRequiredHint([]);
+        }
+        if (obj.sample_class_id) renderLabAttrsForClass(obj.sample_class_id);
+      }catch(e){ console.error('psc parse', e); }
+    } else {
+      // If adding and a lab sample class is already selected, load its attributes
+      if (classSel && classSel.value){
+        renderLabAttrsForClass(classSel.value);
+        setRequiredHint([]);
+      }
+    }
+  });
+
+  // when class select changes, load merged attrs from API
+  classSel.addEventListener('change', function(){
+    const classId = Number(this.value);
+    builder.innerHTML = '';
+    if (!classId) {
+      setRequiredHint([]);
+      if (labAttrsBox) labAttrsBox.innerHTML = '';
+      return;
+    }
+    renderLabAttrsForClass(classId);
+    setRequiredHint([]);
+  });
+
+  if (pscForm) pscForm.addEventListener('submit', function(){ serializeAttrs(); });
+})();
+</script>
+
+<!-- Create Project Modal (lab-scoped) -->
+<div class="modal fade" id="createProjectModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('create_project') }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Create Project</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Project Name</label>
+            <input class="form-control" name="title" required placeholder="e.g., Alloy Aging Study">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Primary Investigator</label>
+            <select class="form-select" name="pi_user_id">
+              <option value="">(unassigned)</option>
+              {% for u in lab_members %}
+                <option value="{{ u.id }}">{{ u.name or u.email }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Description (optional)</label>
+            <textarea class="form-control" name="description" rows="3" placeholder="Summary, goals, or notes"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-primary">Create Project</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 
 {% endblock %}

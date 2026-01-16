@@ -1,0 +1,363 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <div>
+    <h2 class="mb-0">Stock Inventory</h2>
+    <div class="text-muted small">Catalog organized by Sample Class</div>
+  </div>
+  <div class="d-flex gap-2">
+    {% if lab_role and lab_role != 'viewer' %}
+      <a class="btn btn-sm btn-outline-primary" href="{{ url_for('list_samples_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}#sampleClassModal">Add Sample Class</a>
+      <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#createStockModal">New Stock Material</button>
+    {% endif %}
+  </div>
+</div>
+
+{% for sc in sample_classes %}
+  <div class="card card-body mb-3">
+    <div class="d-flex justify-content-between align-items-center">
+      <h5 class="mb-0">{{ sc.name }}</h5>
+      <div class="d-flex align-items-center gap-2">
+        <small class="text-muted">{{ (materials_by_class[sc.id] | length) }} items</small>
+        {% if lab_role and lab_role != 'viewer' %}
+          <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#editSampleClassModal" data-sc-id="{{ sc.id }}">Edit Attributes</button>
+        {% endif %}
+      </div>
+    </div>
+    <div class="mt-2">
+      {% if materials_by_class[sc.id] %}
+        <ul class="list-group">
+          {% for m in materials_by_class[sc.id] %}
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              <div>
+                <a href="{{ url_for('view_stock_material', lab_slug=(current_lab.slug or current_lab.id), stock_id=m.id) }}"><strong>{{ m.name }}</strong></a>
+                <div class="small text-muted">Lot: {{ m.lot_number or '—' }} · {{ m.quantity or '—' }} {{ m.unit or '' }}</div>
+              </div>
+              <div>
+                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('view_stock_material', lab_slug=(current_lab.slug or current_lab.id), stock_id=m.id) }}">View</a>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="text-muted">No stock materials for this class.</div>
+      {% endif %}
+    </div>
+  </div>
+{% endfor %}
+
+{# Uncategorized materials #}
+<div class="card card-body mb-3">
+  <h5>Uncategorized</h5>
+  {% if uncategorized %}
+    <ul class="list-group">
+      {% for m in uncategorized %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <div>
+            <a href="{{ url_for('view_stock_material', lab_slug=(current_lab.slug or current_lab.id), stock_id=m.id) }}"><strong>{{ m.name }}</strong></a>
+            <div class="small text-muted">Lot: {{ m.lot_number or '—' }} · {{ m.quantity or '—' }} {{ m.unit or '' }}</div>
+          </div>
+          <div>
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('view_stock_material', lab_slug=(current_lab.slug or current_lab.id), stock_id=m.id) }}">View</a>
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="text-muted">No uncategorized stock materials.</div>
+  {% endif %}
+</div>
+
+<!-- Create Stock Material Modal -->
+<div class="modal fade" id="createStockModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('create_stock_material_for_lab', lab_slug=(current_lab.slug or current_lab.id)) }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Create Stock Material</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Name</label>
+            <input class="form-control" name="name" required>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Sample Class</label>
+            <select class="form-select" id="stock-class-select" name="sample_class_id">
+              <option value="">(none)</option>
+              {% for sc in sample_classes %}
+                <option value="{{ sc.id }}">{{ sc.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="mb-3" id="stock-class-attrs" style="display:none;">
+            <h6 class="mb-2">Sample Class Attributes</h6>
+            <div id="stock-class-attrs-fields"></div>
+          </div>
+
+          <div class="row g-2">
+            <div class="col-md-6 mb-3">
+              <label class="form-label">Lot number</label>
+              <input class="form-control" name="lot_number">
+            </div>
+            <div class="col-md-3 mb-3">
+              <label class="form-label">Quantity</label>
+              <input class="form-control" type="number" step="any" name="quantity">
+            </div>
+            <div class="col-md-3 mb-3">
+              <label class="form-label">Unit</label>
+              <input class="form-control" name="unit">
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label">Location</label>
+            <input class="form-control" name="location">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Manufacturer</label>
+            <input class="form-control" name="manufacturer">
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Description</label>
+            <textarea class="form-control" name="description" rows="3"></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-primary">Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script id="stock-class-data" type="application/json">{{ sample_class_opts|tojson }}</script>
+<script>
+(function(){
+  const classSel = document.getElementById('stock-class-select');
+  const wrap = document.getElementById('stock-class-attrs');
+  const fields = document.getElementById('stock-class-attrs-fields');
+  const dataEl = document.getElementById('stock-class-data');
+  if (!classSel || !wrap || !fields || !dataEl) return;
+
+  let classes = [];
+  try { classes = JSON.parse(dataEl.textContent || '[]'); } catch(e) {}
+
+  function slugify(name){
+    return (name || '').toLowerCase().replace(/[^0-9a-z]+/g, '_').replace(/^_+|_+$/g, '');
+  }
+
+  function inputForAttr(a) {
+    const field = document.createElement('div');
+    field.className = 'mb-2';
+    const label = document.createElement('label');
+    label.className = 'form-label';
+    label.textContent = a.name + (a.required ? ' *' : '');
+    let input;
+    const type = a.field_type || a.type || 'text';
+    if (type === 'select') {
+      input = document.createElement('select');
+      input.className = 'form-select';
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = '(select)';
+      input.appendChild(empty);
+      (a.choices || []).forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c; opt.textContent = c;
+        input.appendChild(opt);
+      });
+    } else {
+      input = document.createElement('input');
+      input.className = 'form-control';
+      input.type = (type === 'number' ? 'number' : type === 'date' ? 'date' : 'text');
+      if (type === 'number') {
+        input.step = 'any';
+        input.max = '1000000000';
+      } else if (type !== 'date') {
+        input.maxLength = 200;
+      }
+    }
+    input.name = `sc_${slugify(a.name)}`;
+    if (a.required) input.required = true;
+    field.appendChild(label);
+    field.appendChild(input);
+    return field;
+  }
+
+  function renderAttrs(classId){
+    fields.innerHTML = '';
+    const cls = classes.find(c => String(c.id) === String(classId));
+    if (!cls || !cls.attributes || !cls.attributes.length) {
+      wrap.style.display = 'none';
+      return;
+    }
+    cls.attributes.forEach(a => fields.appendChild(inputForAttr(a)));
+    wrap.style.display = '';
+  }
+
+  classSel.addEventListener('change', function(){
+    renderAttrs(this.value);
+  });
+
+  const modalEl = document.getElementById('createStockModal');
+  if (modalEl) {
+    modalEl.addEventListener('show.bs.modal', function(){
+      renderAttrs(classSel.value);
+    });
+  }
+})();
+</script>
+
+{% if lab_role and lab_role != 'viewer' %}
+<!-- Edit Sample Class Attributes Modal -->
+<div class="modal fade" id="editSampleClassModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" id="edit-sample-class-form" action="{{ url_for('update_sample_class_for_lab', lab_slug=(current_lab.slug or current_lab.id), class_id=0) }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Edit Sample Class Attributes</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label">Sample Class</label>
+            <input class="form-control" id="edit-sc-name" disabled>
+          </div>
+          <div id="edit-sc-attrs-builder" class="mb-2"></div>
+          <button type="button" id="edit-sc-add-attr" class="btn btn-sm btn-outline-primary mb-2">+ Add attribute</button>
+          <input type="hidden" name="attributes" id="edit-sc-attributes-input">
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const dataEl = document.getElementById('stock-class-data');
+  if (!dataEl) return;
+  let classes = [];
+  try { classes = JSON.parse(dataEl.textContent || '[]'); } catch(e) {}
+
+  const modal = document.getElementById('editSampleClassModal');
+  const form = document.getElementById('edit-sample-class-form');
+  const nameInput = document.getElementById('edit-sc-name');
+  const builder = document.getElementById('edit-sc-attrs-builder');
+  const addBtn = document.getElementById('edit-sc-add-attr');
+  const hiddenInput = document.getElementById('edit-sc-attributes-input');
+
+  function makeAttrRow(attr){
+    const id = 'e_' + Math.random().toString(36).slice(2,8);
+    const div = document.createElement('div'); div.className='row g-2 align-items-end mb-2 sc-attr-row';
+    div.innerHTML = `
+      <div class="col-md-4">
+        <label class="form-label visually-hidden">Name</label>
+        <input class="form-control sc-attr-name" placeholder="Attribute name" value="${attr && attr.name?attr.name:''}" required>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label visually-hidden">Type</label>
+        <select class="form-select sc-attr-type">
+          <option value="text">Text</option>
+          <option value="number">Number</option>
+          <option value="select">Select</option>
+          <option value="date">Date</option>
+        </select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label visually-hidden">Unit</label>
+        <input class="form-control sc-attr-unit" placeholder="Unit (opt)" value="${attr && attr.unit?attr.unit:''}">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label visually-hidden">Choices</label>
+        <input class="form-control sc-attr-choices" placeholder="comma,separated (for select)" value="${attr && attr.choices? (Array.isArray(attr.choices)?attr.choices.join(','):attr.choices):''}" ${attr && attr.field_type !== 'select'? 'disabled':''}>
+      </div>
+      <div class="col-md-1 d-flex align-items-center">
+        <div class="form-check">
+          <input id="${id}-req" class="form-check-input sc-attr-required" type="checkbox" ${attr && attr.required? 'checked':''}>
+          <label class="form-check-label" for="${id}-req">Req</label>
+        </div>
+      </div>
+      <div class="col-md-1 d-flex align-items-center">
+        <div class="form-check">
+          <input id="${id}-inh" class="form-check-input sc-attr-inherit" type="checkbox" ${attr && attr.inherited? 'checked':''}>
+          <label class="form-check-label" for="${id}-inh">Inh</label>
+        </div>
+      </div>
+      <div class="col-md-1">
+        <button type="button" class="btn btn-sm btn-outline-danger sc-attr-remove">Remove</button>
+      </div>
+    `;
+
+    if (attr && attr.field_type) {
+      const sel = div.querySelector('.sc-attr-type'); sel.value = attr.field_type;
+    }
+
+    const typeSel = div.querySelector('.sc-attr-type');
+    const choicesInput = div.querySelector('.sc-attr-choices');
+    typeSel.addEventListener('change', function(){
+      const isSelect = this.value === 'select';
+      choicesInput.disabled = !isSelect;
+      if (!isSelect) choicesInput.value = '';
+    });
+
+    div.querySelector('.sc-attr-remove').addEventListener('click', function(){ div.remove(); serializeAttrs(); });
+    return div;
+  }
+
+  function serializeAttrs(){
+    const rows = builder.querySelectorAll('.sc-attr-row');
+    const out = [];
+    rows.forEach(r => {
+      const name = (r.querySelector('.sc-attr-name').value || '').trim();
+      if (!name) return;
+      const field_type = r.querySelector('.sc-attr-type').value;
+      const unit = (r.querySelector('.sc-attr-unit').value || '').trim() || null;
+      const rawChoices = (r.querySelector('.sc-attr-choices').value || '').trim();
+      const choices = rawChoices ? rawChoices.split(',').map(s=>s.trim()).filter(Boolean) : null;
+      const required = r.querySelector('.sc-attr-required').checked;
+      const inherited = !!r.querySelector('.sc-attr-inherit') && r.querySelector('.sc-attr-inherit').checked;
+      const obj = { name, field_type, required, inherited };
+      if (unit) obj.unit = unit;
+      if (choices) obj.choices = choices;
+      out.push(obj);
+    });
+    hiddenInput.value = JSON.stringify(out);
+    return out;
+  }
+
+  addBtn.addEventListener('click', function(){ builder.appendChild(makeAttrRow()); });
+
+  if (modal){
+    modal.addEventListener('show.bs.modal', function(e){
+      const trigger = e.relatedTarget;
+      const scId = trigger && trigger.getAttribute ? trigger.getAttribute('data-sc-id') : null;
+      const sc = classes.find(x => String(x.id) === String(scId));
+      builder.innerHTML = '';
+      nameInput.value = sc ? sc.name : '';
+      if (sc && sc.attributes && sc.attributes.length){
+        sc.attributes.forEach(a => builder.appendChild(makeAttrRow(a)));
+      }
+      if (form && scId){
+        form.action = `{{ url_for('update_sample_class_for_lab', lab_slug=(current_lab.slug or current_lab.id), class_id=0) }}`.replace('/0/', `/${scId}/`);
+      }
+    });
+  }
+
+  if (form){
+    form.addEventListener('submit', function(){ serializeAttrs(); });
+  }
+})();
+</script>
+{% endif %}
+
+{% endblock %}
