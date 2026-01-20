@@ -796,6 +796,18 @@ class StockMaterialQuantityLog(db.Model):
     sample = db.relationship('Sample', foreign_keys=[sample_id])
 
 
+class SampleStockMaterial(db.Model):
+    __tablename__ = 'sample_stock_material'
+    id = db.Column(db.Integer, primary_key=True)
+    sample_id = db.Column(db.Integer, db.ForeignKey('sample.id'), nullable=False)
+    stock_material_id = db.Column(db.Integer, db.ForeignKey('stock_material.id'), nullable=False)
+    quantity_used = db.Column(db.Float)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    sample = db.relationship('Sample', backref=db.backref('stock_material_links', cascade='all, delete-orphan'))
+    stock_material = db.relationship('StockMaterial')
+
+
 class SOP(db.Model):
     __tablename__ = 'sop'
     id = db.Column(db.Integer, primary_key=True)
@@ -2417,31 +2429,46 @@ def view_project(project_id, lab_slug=None):
              .order_by(Sample.name.asc())
              .all())
     sample_tree = [serialize_sample_tree(r) for r in roots]
-    sample_tree_by_stock = {}
+    sample_tree_by_class = {}
     for r in roots:
         stock_obj = getattr(r, 'stock_material', None)
+        sc = getattr(r, 'sample_class', None) or (getattr(stock_obj, 'sample_class', None) if stock_obj else None)
+        class_label = sc.name if sc else 'No Sample Class'
+        class_key = f"class:{sc.id}" if sc else 'noclass'
+        class_entry = sample_tree_by_class.setdefault(class_key, {
+            'label': class_label,
+            'class_id': sc.id if sc else None,
+            'stocks': {}
+        })
+
         if stock_obj:
-            label = stock_obj.name + (f" — {stock_obj.lot_number}" if stock_obj.lot_number else "")
-            key = f"stock:{stock_obj.id}"
-            entry = sample_tree_by_stock.setdefault(key, {
-                'label': label,
+            stock_label = stock_obj.name + (f" — {stock_obj.lot_number}" if stock_obj.lot_number else "")
+            stock_key = f"stock:{stock_obj.id}"
+            stock_entry = class_entry['stocks'].setdefault(stock_key, {
+                'label': stock_label,
                 'stock_id': stock_obj.id,
                 'roots': []
             })
-            entry['roots'].append(serialize_sample_tree(r))
+            stock_entry['roots'].append(serialize_sample_tree(r))
         else:
-            key = 'nostock'
-            entry = sample_tree_by_stock.setdefault(key, {
+            stock_key = 'nostock'
+            stock_entry = class_entry['stocks'].setdefault(stock_key, {
                 'label': 'No Stock Material',
                 'stock_id': None,
                 'roots': []
             })
-            entry['roots'].append(serialize_sample_tree(r))
-    # sort stock groups (No Stock Material last)
-    sample_tree_by_stock = dict(sorted(
-        sample_tree_by_stock.items(),
-        key=lambda kv: (kv[1]['label'] == 'No Stock Material', kv[1]['label'].lower())
+            stock_entry['roots'].append(serialize_sample_tree(r))
+
+    # sort class groups (No Sample Class last) and stock groups (No Stock Material last)
+    sample_tree_by_class = dict(sorted(
+        sample_tree_by_class.items(),
+        key=lambda kv: (kv[1]['label'] == 'No Sample Class', kv[1]['label'].lower())
     ))
+    for key, entry in sample_tree_by_class.items():
+        entry['stocks'] = dict(sorted(
+            entry['stocks'].items(),
+            key=lambda kv: (kv[1]['label'] == 'No Stock Material', kv[1]['label'].lower())
+        ))
 
     # PI candidates (prefer lab members)
     try:
@@ -2484,7 +2511,7 @@ def view_project(project_id, lab_slug=None):
         "project.html",
         project=project,
         sample_tree=sample_tree,
-        sample_tree_by_stock=sample_tree_by_stock,
+        sample_tree_by_class=sample_tree_by_class,
         pi_candidates=pi_candidates,
         lab_members=pi_candidates,
         lab_role=lab_role,
@@ -3604,28 +3631,46 @@ def create_sample_for_lab(lab_slug):
     # Determine stock material and sample class (inherited from stock material)
     from_stock = (request.form.get('from_stock') or '').strip().lower() == 'yes'
     stock_material_id = request.form.get('stock_material_id', type=int)
+    extra_stock_ids = [int(x) for x in request.form.getlist('stock_material_id_extra') if str(x).strip().isdigit()]
     new_qty = request.form.get('stock_new_quantity', type=float)
     sample_qty = request.form.get('sample_quantity', type=float)
+    if not from_stock:
+        extra_stock_ids = []
     if parent:
         root = get_sample_root(parent)
         stock_material_id = getattr(root, 'stock_material_id', None)
+        extra_stock_ids = []
         if not stock_material_id:
             flash('Parent sample has no stock material to inherit.', 'error')
             return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
     else:
         if from_stock and not stock_material_id:
-            flash('Stock material is required when origin is stock.', 'error')
-            return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+            if not extra_stock_ids:
+                flash('Stock material is required when origin is stock.', 'error')
+                return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+            stock_material_id = extra_stock_ids[0]
 
     mat = StockMaterial.query.get(stock_material_id) if stock_material_id else None
-    if mat and mat.database_id != lab.id:
-        flash('Invalid stock material for this lab.', 'error')
-        return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+    mats = []
+    if mat:
+        mats.append(mat)
+    for mid in extra_stock_ids:
+        if mat and mid == mat.id:
+            continue
+        mobj = StockMaterial.query.get(mid)
+        if mobj:
+            mats.append(mobj)
 
-    if mat and mat.created_at:
-        if datetime.utcnow() < mat.created_at:
-            flash('Cannot create a sample before the stock material was received into inventory.', 'error')
+    for mobj in mats:
+        if mobj.database_id != lab.id:
+            flash('Invalid stock material for this lab.', 'error')
             return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+
+    for mobj in mats:
+        if mobj and mobj.created_at:
+            if datetime.utcnow() < mobj.created_at:
+                flash('Cannot create a sample before the stock material was received into inventory.', 'error')
+                return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
 
     if mat and from_stock and not parent:
         if new_qty is None:
@@ -3635,13 +3680,35 @@ def create_sample_for_lab(lab_slug):
             flash('Sample quantity is required when splitting from stock material.', 'error')
             return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
 
-    sample_class_id = root.sample_class_id if root and getattr(root, 'sample_class_id', None) else (mat.sample_class_id if mat else None)
+    extra_qty_raw = request.form.getlist('stock_use_qty_extra')
+    extra_qty = []
+    for v in extra_qty_raw:
+        try:
+            extra_qty.append(float(v))
+        except Exception:
+            extra_qty.append(None)
+    if extra_stock_ids and from_stock and not parent:
+        if len(extra_qty) < len(extra_stock_ids) or any(q is None for q in extra_qty[:len(extra_stock_ids)]):
+            flash('Quantity used is required for each additional stock material.', 'error')
+            return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+
+    sample_class_id = root.sample_class_id if root and getattr(root, 'sample_class_id', None) else None
+    if not sample_class_id:
+        if len(mats) == 1 and mat:
+            sample_class_id = mat.sample_class_id
+        elif len(mats) > 1:
+            class_ids = {getattr(mobj, 'sample_class_id', None) for mobj in mats}
+            class_ids = {c for c in class_ids if c}
+            if len(class_ids) == 1:
+                sample_class_id = class_ids.pop()
+    if request.form.get('sample_class_id'):
+        sample_class_id = request.form.get('sample_class_id', type=int)
 
     # Handle sample class attributes (lab-level classes)
     class_attrs = []
     class_values = {}
     inherit_from_parent = bool(root and getattr(root, 'class_attrs_json', None))
-    inherit_from_stock = bool(mat and from_stock and not parent and getattr(mat, 'class_attrs_json', None))
+    inherit_from_stock = bool(mat and from_stock and not parent and getattr(mat, 'class_attrs_json', None) and len(mats) == 1)
     if inherit_from_parent:
         class_values = safe_json_loads(getattr(root, 'class_attrs_json', None), {})
     elif inherit_from_stock:
@@ -3758,6 +3825,35 @@ def create_sample_for_lab(lab_slug):
             delta=delta,
             note=note
         ))
+        db.session.add(SampleStockMaterial(sample_id=sample.id, stock_material_id=mat.id, quantity_used=sample_qty))
+        db.session.commit()
+
+    if extra_stock_ids and from_stock and not parent:
+        for idx, mid in enumerate(extra_stock_ids):
+            mobj = StockMaterial.query.get(mid)
+            if not mobj:
+                continue
+            qty_used = extra_qty[idx] if idx < len(extra_qty) else None
+            before_qty = mobj.quantity
+            new_qty_calc = None
+            if before_qty is not None and qty_used is not None:
+                new_qty_calc = before_qty - qty_used
+                if new_qty_calc < 0:
+                    flash(f'Quantity used exceeds available stock for {mobj.name}.', 'error')
+                    return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get("view", "project")))
+                mobj.quantity = new_qty_calc
+            delta = (new_qty_calc - before_qty) if (before_qty is not None and new_qty_calc is not None) else None
+            unit = mobj.unit or ''
+            note = f"Sample mix qty: {qty_used}{(' ' + unit) if unit else ''}" if qty_used is not None else None
+            db.session.add(StockMaterialQuantityLog(
+                stock_material_id=mobj.id,
+                sample_id=sample.id,
+                quantity_before=before_qty,
+                quantity_after=new_qty_calc,
+                delta=delta,
+                note=note
+            ))
+            db.session.add(SampleStockMaterial(sample_id=sample.id, stock_material_id=mobj.id, quantity_used=qty_used))
         db.session.commit()
 
     # NEW: link to experiment + all ancestors (enforce same-project)
@@ -3854,11 +3950,16 @@ def view_sample(sample_id, lab_slug=None, project_id=None):
     # Build defs for display + editing
     attrs = get_project_attrs(sample.project_id)
     val_by_attr = {v.attribute_id: v for v in sample.attribute_values}
+    root = get_sample_root(sample)
+    root_vals_by_attr = {v.attribute_id: v for v in getattr(root, 'attribute_values', [])} if root else {}
 
     needs_update = 0
     attr_defs = []
     for a in attrs:
-        v = val_by_attr.get(a.id)
+        if getattr(a, 'inherited', False) and sample.parent_id:
+            v = root_vals_by_attr.get(a.id)
+        else:
+            v = val_by_attr.get(a.id)
         value = v.value if v else ""
         placeholder = (v.is_placeholder if v else True) if value == "PLEASE UPDATE" or (
             not v) else bool(v.is_placeholder)
@@ -3876,6 +3977,52 @@ def view_sample(sample_id, lab_slug=None, project_id=None):
             "unit": a.unit or ""
         })
 
+    # Sample class attributes (display/edit)
+    class_attr_defs = []
+    class_attrs_values = safe_json_loads(getattr(sample, 'class_attrs_json', None), {})
+    class_attrs_inherited = False
+    if sample.parent_id:
+        class_attrs_inherited = True
+        if root and getattr(root, 'class_attrs_json', None):
+            class_attrs_values = safe_json_loads(getattr(root, 'class_attrs_json', None), {})
+    elif sample.stock_material and getattr(sample.stock_material, 'class_attrs_json', None):
+        class_attrs_inherited = True
+        class_attrs_values = safe_json_loads(getattr(sample.stock_material, 'class_attrs_json', None), {})
+
+    sc = getattr(sample, 'sample_class', None)
+    psc = getattr(sample, 'project_class', None)
+    if sc and getattr(sc, 'attributes_json', None):
+        base_attrs = safe_json_loads(sc.attributes_json, [])
+        if psc and getattr(psc, 'attributes_override_json', None):
+            override = safe_json_loads(psc.attributes_override_json, [])
+            merged = []
+            names = {a.get('name'): a for a in override if isinstance(a, dict)}
+            for a in base_attrs:
+                if isinstance(a, dict) and a.get('name') in names:
+                    merged.append(names.pop(a.get('name')))
+                else:
+                    merged.append(a)
+            merged.extend(names.values())
+        else:
+            merged = base_attrs
+
+        for a in merged:
+            if not isinstance(a, dict):
+                continue
+            aname = a.get('name')
+            if not aname:
+                continue
+            slug = re.sub('[^0-9a-z]+', '_', (aname or '').lower())
+            class_attr_defs.append({
+                "name": aname,
+                "field_type": a.get('field_type') or 'text',
+                "required": bool(a.get('required')),
+                "choices": a.get('choices') or [],
+                "unit": a.get('unit') or "",
+                "value": class_attrs_values.get(aname, ""),
+                "form_key": f"sc_{slug}",
+            })
+
     return render_template(
         "sample.html",
         sample=sample,
@@ -3883,7 +4030,10 @@ def view_sample(sample_id, lab_slug=None, project_id=None):
         lineage=lineage,
         family_tree=serialize_sample_tree(get_sample_root(sample), sample.id),
         attr_defs=attr_defs,
+        class_attr_defs=class_attr_defs,
+        class_attrs_inherited=class_attrs_inherited,
         needs_update=needs_update,
+        sample_stock_materials=SampleStockMaterial.query.filter_by(sample_id=sample.id).all(),
         stock_materials=StockMaterial.query.filter_by(database_id=sample.project.database_id).order_by(StockMaterial.name.asc()).all(),
         current_lab=sample.project.database,
     )
@@ -4321,6 +4471,48 @@ def edit_sample(sample_id):
                         c.stock_material_id = None
                         cascade_clear(c)
                 cascade_clear(sample)
+
+    # Sample class attributes (editable only when not inherited)
+    class_attrs_inherited = False
+    if sample.parent_id:
+        class_attrs_inherited = True
+    elif sample.stock_material and getattr(sample.stock_material, 'class_attrs_json', None):
+        class_attrs_inherited = True
+
+    sc = getattr(sample, 'sample_class', None)
+    psc = getattr(sample, 'project_class', None)
+    class_defs = []
+    if sc and getattr(sc, 'attributes_json', None):
+        base_attrs = safe_json_loads(sc.attributes_json, [])
+        if psc and getattr(psc, 'attributes_override_json', None):
+            override = safe_json_loads(psc.attributes_override_json, [])
+            merged = []
+            names = {a.get('name'): a for a in override if isinstance(a, dict)}
+            for a in base_attrs:
+                if isinstance(a, dict) and a.get('name') in names:
+                    merged.append(names.pop(a.get('name')))
+                else:
+                    merged.append(a)
+            merged.extend(names.values())
+        else:
+            merged = base_attrs
+        class_defs = [a for a in merged if isinstance(a, dict) and a.get('name')]
+
+    class_missing = []
+    if class_defs and not class_attrs_inherited:
+        class_values = {}
+        for a in class_defs:
+            aname = a.get('name')
+            slug = re.sub('[^0-9a-z]+', '_', (aname or '').lower())
+            key = f"sc_{slug}"
+            val = (request.form.get(key) or "").strip()
+            if a.get('required') and not val:
+                class_missing.append(aname)
+            class_values[aname] = val
+        if class_missing:
+            flash("Missing required class attributes: " + ", ".join(class_missing), "error")
+            return redirect(url_for("view_sample", sample_id=sample.id))
+        sample.class_attrs_json = json.dumps(class_values) if class_values else None
 
     attrs = get_project_attrs(sample.project_id)
     existing = {v.attribute_id: v for v in sample.attribute_values}

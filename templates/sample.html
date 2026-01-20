@@ -34,7 +34,22 @@
 
 </div>
 
-{% if sample.stock_material %}
+{% if sample_stock_materials and sample_stock_materials|length %}
+  <div class="card card-body mb-3">
+    <h6 class="mb-1">{% if sample_stock_materials|length > 1 %}Stock Materials (Mixture){% else %}Stock Material{% endif %}</h6>
+    <ul class="mb-0">
+      {% for link in sample_stock_materials %}
+        <li>
+          <a href="{{ url_for('view_stock_material', stock_id=link.stock_material.id) }}">{{ link.stock_material.name }}</a>
+          {% if link.stock_material.lot_number %} · <span class="text-muted">Lot {{ link.stock_material.lot_number }}</span>{% endif %}
+          {% if link.quantity_used is not none %}
+            · <span class="text-muted">Used {{ link.quantity_used }}{{ (' ' + link.stock_material.unit) if link.stock_material.unit else '' }}</span>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+{% elif sample.stock_material %}
   <div class="card card-body mb-3">
     <h6 class="mb-1">Stock Material</h6>
     <div>
@@ -104,7 +119,34 @@
 
     <!-- Attributes (display) -->
     <div class="card card-body mb-3">
-      <h5 class="mb-2">Attributes (Project-defined)</h5>
+      <h5 class="mb-2">Attributes</h5>
+
+      {% if class_attr_defs and class_attr_defs|length %}
+        <h6 class="text-muted">Sample Class Attributes</h6>
+        <dl class="row mb-3">
+          {% for a in class_attr_defs %}
+            <dt class="col-5">
+              {{ a.name }}
+              {% if a.unit %}
+                <span class="text-muted">({{ a.unit }})</span>
+              {% endif %}
+              {% if a.required %}<span class="text-danger" title="required">*</span>{% endif %}
+            </dt>
+            <dd class="col-7">
+              {% if a.value %}
+                {{ a.value }}{% if a.unit %} {{ a.unit }}{% endif %}
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+              {% if class_attrs_inherited %}
+                <span class="badge bg-secondary ms-2">inherited</span>
+              {% endif %}
+            </dd>
+          {% endfor %}
+        </dl>
+      {% endif %}
+
+      <h6 class="text-muted">Project Attributes</h6>
       <dl class="row mb-0">
         {% if attr_defs and attr_defs|length %}
           {% for a in attr_defs %}
@@ -123,6 +165,9 @@
               {% endif %}
               {% if a.is_placeholder %}
                 <span class="badge bg-warning text-dark ms-2">needs update</span>
+              {% endif %}
+              {% if sample.parent and a.inherited %}
+                <span class="badge bg-secondary ms-2">inherited</span>
               {% endif %}
             </dd>
           {% endfor %}
@@ -154,8 +199,48 @@
           </div>
         {% endif %}
 
+        {% if class_attr_defs and class_attr_defs|length %}
+          <h6 class="mt-2">Sample Class Attributes</h6>
+          {% for a in class_attr_defs %}
+            <div class="mb-2">
+              <label class="form-label">
+                {{ a.name }}
+                {% if a.unit %}<span class="text-muted">({{ a.unit }})</span>{% endif %}
+                {% if a.required %} *{% endif %}
+                {% if class_attrs_inherited %}
+                  <span class="badge bg-secondary ms-2">inherited</span>
+                {% endif %}
+              </label>
+
+              {% if a.field_type == "select" %}
+                <select class="form-select" name="{{ a.form_key }}" {% if a.required and not class_attrs_inherited %}required{% endif %} {% if class_attrs_inherited %}disabled{% endif %}>
+                  {% if not a.required %}
+                    <option value="">(optional)</option>
+                  {% endif %}
+                  {% for choice in a.choices %}
+                    <option value="{{ choice }}" {% if a.value == choice %}selected{% endif %}>{{ choice }}</option>
+                  {% endfor %}
+                </select>
+              {% else %}
+                <input
+                  class="form-control"
+                  name="{{ a.form_key }}"
+                  {% if a.field_type == "number" %}type="number" step="any" max="1000000000"
+                  {% elif a.field_type == "date" %}type="date"
+                  {% else %}type="text"{% endif %}
+                  value="{{ a.value or '' }}"
+                  {% if a.field_type != "number" and a.field_type != "date" %}maxlength="200"{% endif %}
+                  {% if not a.required %}placeholder="(optional){% if a.unit %} — {{ a.unit }}{% endif %}"{% endif %}
+                  {% if a.required and not class_attrs_inherited %}required{% endif %}
+                  {% if class_attrs_inherited %}disabled{% endif %}
+                >
+              {% endif %}
+            </div>
+          {% endfor %}
+        {% endif %}
+
         {% if attr_defs and attr_defs|length %}
-          <h6 class="mt-2">Attributes</h6>
+          <h6 class="mt-3">Project Attributes</h6>
           {% for a in attr_defs %}
             <div class="mb-2">
               <label class="form-label">
@@ -164,6 +249,9 @@
                 {% if a.required %} *{% endif %}
                 {% if a.is_placeholder %}
                   <span class="badge bg-warning text-dark ms-2">needs update</span>
+                {% endif %}
+                {% if sample.parent and a.inherited %}
+                  <span class="badge bg-secondary ms-2">inherited</span>
                 {% endif %}
               </label>
 
