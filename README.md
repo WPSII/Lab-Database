@@ -78,4 +78,6 @@ Starting app: venv\Scripts\python.exe app.py --host=127.0.0.1 --port=5000
 
 ## License
 
-MIT License
+Copyright © 2026 Patrick Simon. All rights reserved.
+
+This software is proprietary and confidential. Unauthorized copying, distribution, modification, or use of this software, in whole or in part, is strictly prohibited without express written permission from the copyright holder.
