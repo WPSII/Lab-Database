@@ -1,48 +1,53 @@
+
 # Clean Database
 
-A simple Flask-based lab database application for managing research data.  
-This project is set up to be easy to install and run locally, with a build script (`run.ps1`) that handles environment setup and dependencies.
+Clean Database is a simple, local-first Flask web app for managing research data in a lab setting. It’s designed for easy setup and use, with a PowerShell build script (`run.ps1`) that handles everything from environment creation to dependency checks and app launch.
 
 ---
 
 ## Features
-- Flask web application
-- SQLAlchemy database integration
-- User roles & login system (WIP)
-- Auto environment setup via PowerShell script
-- Dependency checklist with clear `[OK]` indicators
+
+- Modern Flask web interface
+- SQLAlchemy ORM for database management
+- User roles & login system (work in progress)
+- One-command setup via PowerShell (`run.ps1`)
+- Dependency checklist with clear [OK] indicators
 
 ---
 
-## Setup & Usage
+## Quick Start
 
 ### 1. Clone the Repository
+
 ```powershell
-git clone https://github.com/WPSII/Lab-Database.git
-cd Lab-Database
+git clone https://github.com/WPSII/rickBASE.git
+cd rickBASE
 ```
 
 ### 2. Run the Build Script
-On **Windows (PowerShell):**
+
+On Windows (PowerShell):
+
 ```powershell
 .
 run.ps1
 ```
 
-The script will:
-- Create a virtual environment (`venv/`) if not present
-- Install dependencies from `requirements.txt`
-- Show a checklist of installed packages
-- Start the Flask app
+What the script does:
+- Creates a virtual environment (`venv/`) if missing
+- Installs all dependencies from `requirements.txt`
+- Checks and lists all required packages
+- Starts the Flask app automatically
 
-### 3. Access the App
-Once running, open your browser and go to:
+### 3. Open the App
 
-👉 [http://127.0.0.1:5000](http://127.0.0.1:5000)
+Once running, visit:
+
+👉 http://127.0.0.1:5000
 
 ---
 
-## Example Output of `run.ps1`
+## Example Output (`run.ps1`)
 
 ```
 Virtual environment found at 'venv'.
@@ -59,16 +64,18 @@ Starting app: venv\Scripts\python.exe app.py --host=127.0.0.1 --port=5000
 ---
 
 ## Development Notes
-- Do **not** commit `venv/`, `uploads/`, or `*.db` files. They are ignored via `.gitignore`.
-- For a clean start:
-```powershell
-git rm -r --cached venv uploads *.db
-git add .gitignore
-git commit -m "Clean repo"
-git push
-```
+
+- Do **not** commit `venv/`, `uploads/`, or `*.db` files. These are ignored via `.gitignore`.
+- For a clean repo:
+	```powershell
+	git rm -r --cached venv uploads *.db
+	git add .gitignore
+	git commit -m "Clean repo"
+	git push
+	```
 
 ---
 
 ## License
+
 MIT License
