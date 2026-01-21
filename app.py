@@ -23,6 +23,9 @@ from sqlalchemy.exc import OperationalError, IntegrityError
 import sqlite3
 from helpers import (
     safe_json_loads,
+    safe_slug,
+    save_uploaded_file,
+    send_stored_file,
     get_sample_lineage, get_sample_root,
     get_full_experiment_chain, get_experiment_descendant_ids,
     get_ancestors, get_descendants,
@@ -150,11 +153,15 @@ def ensure_runtime_columns_once():
                 _add_if_missing_sqlite(db_path, 'project', 'end_date', 'DATE')
                 _add_if_missing_sqlite(db_path, 'equipment', 'project_id', 'INTEGER')
                 _add_if_missing_sqlite(db_path, 'equipment', 'database_id', 'INTEGER')
+                _add_if_missing_sqlite(db_path, 'equipment', 'facility_id', 'INTEGER')
                 _add_if_missing_sqlite(db_path, 'stock_material', 'sample_class_id', 'INTEGER')
                 _add_if_missing_sqlite(db_path, 'stock_material', 'database_id', 'INTEGER')
                 _add_if_missing_sqlite(db_path, 'stock_material', 'class_attrs_json', 'TEXT')
                 _add_if_missing_sqlite(db_path, 'stock_material', 'original_quantity', 'FLOAT')
                 _add_if_missing_sqlite(db_path, 'sample_class', 'database_id', 'INTEGER')
+                _add_if_missing_sqlite(db_path, 'document', 'uploaded_by_user_id', 'INTEGER')
+                _add_if_missing_sqlite(db_path, 'sample_document', 'uploaded_by_user_id', 'INTEGER')
+                _add_if_missing_sqlite(db_path, 'stock_material_document', 'uploaded_by_user_id', 'INTEGER')
                 _add_if_missing_sqlite(db_path, 'database', 'slug', 'VARCHAR(160)')
                 _add_if_missing_sqlite(db_path, 'database', 'db_filename', 'VARCHAR(300)')
                 _add_if_missing_sqlite(db_path, 'database', 'time_zone', 'VARCHAR(64)')
@@ -195,11 +202,15 @@ def ensure_runtime_columns_once():
                 add_column_if_missing('project', 'end_date', 'DATE')
                 add_column_if_missing('equipment', 'project_id', 'INTEGER')
                 add_column_if_missing('equipment', 'database_id', 'INTEGER')
+                add_column_if_missing('equipment', 'facility_id', 'INTEGER')
                 add_column_if_missing('stock_material', 'sample_class_id', 'INTEGER')
                 add_column_if_missing('stock_material', 'database_id', 'INTEGER')
                 add_column_if_missing('stock_material', 'class_attrs_json', 'TEXT')
                 add_column_if_missing('stock_material', 'original_quantity', 'FLOAT')
                 add_column_if_missing('sample_class', 'database_id', 'INTEGER')
+                add_column_if_missing('document', 'uploaded_by_user_id', 'INTEGER')
+                add_column_if_missing('sample_document', 'uploaded_by_user_id', 'INTEGER')
+                add_column_if_missing('stock_material_document', 'uploaded_by_user_id', 'INTEGER')
                 add_column_if_missing('database', 'slug', 'VARCHAR(160)')
                 add_column_if_missing('database', 'db_filename', 'VARCHAR(300)')
                 add_column_if_missing('database', 'time_zone', 'VARCHAR(64)')
@@ -448,6 +459,8 @@ class Document(db.Model):
     stored_path = db.Column(db.String(500), nullable=False)
     mimetype = db.Column(db.String(120))
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    uploaded_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    uploaded_by = db.relationship("User")
 
 
 # --- Sample models ---
@@ -484,6 +497,8 @@ class SampleDocument(db.Model):
     stored_path = db.Column(db.String(500), nullable=False)
     mimetype = db.Column(db.String(120))
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    uploaded_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    uploaded_by = db.relationship("User")
 
 
 @app.post("/experiment/<int:experiment_id>/edit")
@@ -647,6 +662,9 @@ class Equipment(db.Model):
     # optional lab scoping (nullable for legacy)
     database_id = db.Column(db.Integer, db.ForeignKey('database.id'), nullable=True)
     database = db.relationship('Database')
+    # optional facility linkage
+    facility_id = db.Column(db.Integer, db.ForeignKey('facility.id'), nullable=True)
+    facility = db.relationship('Facility', foreign_keys=[facility_id])
 
     def last_calibration(self):
         return CalibrationLog.query.filter_by(equipment_id=self.id).order_by(CalibrationLog.performed_at.desc()).first()
@@ -709,12 +727,29 @@ class CalibrationLog(db.Model):
     equipment_id = db.Column(db.Integer, db.ForeignKey('equipment.id'), nullable=False)
     performed_by = db.Column(db.String(200))
     performed_at = db.Column(db.DateTime, default=datetime.utcnow)
+    calibration_type = db.Column(db.String(120))
     values_json = db.Column(db.Text)   # JSON list of {"ref": <value>, "measured": <value>} or simple pairs
     temperature = db.Column(db.Float)
     summary_json = db.Column(db.Text)  # computed summary (bias, slope, r2, etc.) as JSON string
     next_due_date = db.Column(db.DateTime)
 
     equipment = db.relationship('Equipment', backref=db.backref('calibration_logs', cascade='all, delete-orphan'))
+
+
+class CalibrationRoutine(db.Model):
+    __tablename__ = 'calibration_routine'
+    id = db.Column(db.Integer, primary_key=True)
+    equipment_id = db.Column(db.Integer, db.ForeignKey('equipment.id'), nullable=False)
+    name = db.Column(db.String(120), nullable=False)  # type/name
+    measurement = db.Column(db.String(120), nullable=False, default='')
+    unit = db.Column(db.String(40))
+    standard = db.Column(db.String(120))
+    min_value = db.Column(db.Float)
+    max_value = db.Column(db.Float)
+    required_measurements = db.Column(db.Integer)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    equipment = db.relationship('Equipment', backref=db.backref('calibration_routines', cascade='all, delete-orphan'))
 
 
 class SampleMeasurement(db.Model):
@@ -781,6 +816,8 @@ class StockMaterialDocument(db.Model):
     stored_path = db.Column(db.String(500), nullable=False)
     mimetype = db.Column(db.String(120))
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+    uploaded_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    uploaded_by = db.relationship("User")
 
 
 class StockMaterialQuantityLog(db.Model):
@@ -794,6 +831,18 @@ class StockMaterialQuantityLog(db.Model):
     note = db.Column(db.String(255))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     sample = db.relationship('Sample', foreign_keys=[sample_id])
+
+
+class SampleStockMaterial(db.Model):
+    __tablename__ = 'sample_stock_material'
+    id = db.Column(db.Integer, primary_key=True)
+    sample_id = db.Column(db.Integer, db.ForeignKey('sample.id'), nullable=False)
+    stock_material_id = db.Column(db.Integer, db.ForeignKey('stock_material.id'), nullable=False)
+    quantity_used = db.Column(db.Float)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    sample = db.relationship('Sample', backref=db.backref('stock_material_links', cascade='all, delete-orphan'))
+    stock_material = db.relationship('StockMaterial')
 
 
 class SOP(db.Model):
@@ -815,6 +864,19 @@ class ExperimentLog(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
     notes = db.Column(db.Text)
     attachments_json = db.Column(db.Text)
+
+
+class SampleLog(db.Model):
+    __tablename__ = 'sample_log'
+    id = db.Column(db.Integer, primary_key=True)
+    sample_id = db.Column(db.Integer, db.ForeignKey('sample.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    title = db.Column(db.String(200), nullable=False)
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    sample = db.relationship('Sample', backref=db.backref('logs', cascade='all, delete-orphan'))
+    user = db.relationship('User')
 
 
 class Invitation(db.Model):
@@ -1011,13 +1073,7 @@ def exp_upload_dir(project_id: int, experiment_id: int) -> str:
     else:
         lab_key = 'lab-unknown'
 
-    def _slug(s: str) -> str:
-        if not s:
-            return ''
-        s2 = re.sub(r"[^0-9a-zA-Z]+", '-', s).strip('-').lower()
-        return s2[:40]
-
-    proj_key = f"{proj.id}-{_slug(proj.title)}"
+    proj_key = f"{proj.id}-{safe_slug(proj.title)}"
     d = os.path.join(UPLOAD_FOLDER, lab_key, 'projects', proj_key, 'experiments', str(experiment_id))
     os.makedirs(d, exist_ok=True)
     return d
@@ -1035,13 +1091,7 @@ def sample_upload_dir(sample_id: int) -> str:
     dbobj = getattr(proj, 'database', None) if proj else None
     lab_key = dbobj.slug or (f"lab-{dbobj.id}" if dbobj else 'lab-unknown')
 
-    def _slug(s: str) -> str:
-        if not s:
-            return ''
-        s2 = re.sub(r"[^0-9a-zA-Z]+", '-', s).strip('-').lower()
-        return s2[:40]
-
-    proj_key = f"{proj.id}-{_slug(proj.title)}" if proj else 'no-project'
+    proj_key = f"{proj.id}-{safe_slug(proj.title)}" if proj else 'no-project'
     d = os.path.join(UPLOAD_FOLDER, lab_key, 'projects', proj_key, 'samples', str(sample_id))
     os.makedirs(d, exist_ok=True)
     return d
@@ -1060,93 +1110,6 @@ def stock_material_upload_dir(stock_id: int) -> str:
     os.makedirs(d, exist_ok=True)
     return d
 
-
-
-def get_experiment_descendant_ids(exp):
-    """All descendant experiment IDs (to block cycles when reparenting)."""
-    seen = set()
-    stack = list(exp.children)
-    while stack:
-        node = stack.pop()
-        if node.id in seen:
-            continue
-        seen.add(node.id)
-        stack.extend(node.children)
-    return seen
-
-# --- Experiment tree helpers ---
-
-
-def get_ancestors(exp):
-    """Yield ancestors from parent up to root."""
-    seen = set()
-    cur = exp.parent
-    while cur and cur.id not in seen:
-        yield cur
-        seen.add(cur.id)
-        cur = cur.parent
-
-
-def get_descendants(exp):
-    """Yield all descendants (DFS)."""
-    seen = set()
-    stack = list(exp.children)
-    while stack:
-        n = stack.pop()
-        if n.id in seen:
-            continue
-        seen.add(n.id)
-        yield n
-        stack.extend(n.children)
-
-
-def would_create_cycle_as_parent(current, candidate_parent):
-    """Invalid if parent == current or parent is a descendant of current."""
-    if candidate_parent.id == current.id:
-        return True
-    return any(d.id == candidate_parent.id for d in get_descendants(current))
-
-
-def would_create_cycle_as_child(current, candidate_child):
-    """Invalid if child == current or child is an ancestor of current."""
-    if candidate_child.id == current.id:
-        return True
-    return any(a.id == candidate_child.id for a in get_ancestors(current))
-
-
-def build_linked_sample_tree(experiment):
-    """
-    Return a forest (list of roots) of linked samples organized by their
-    parent/child relations, but restricted to samples linked to this experiment.
-    Each node is: {"sample": Sample, "link": SampleExperiment, "children": [...]}
-    """
-    links = list(experiment.sample_links)  # SampleExperiment rows
-    nodes = {}
-
-    # make a node per linked sample
-    for link in links:
-        s = link.sample
-        nodes[s.id] = {"sample": s, "link": link, "children": []}
-
-    roots = []
-    # wire up parent/child within the linked set only
-    for node in nodes.values():
-        s = node["sample"]
-        if s.parent_id in nodes:
-            nodes[s.parent_id]["children"].append(node)
-        else:
-            roots.append(node)
-
-    # sort nicely
-    def sort_tree(n):
-        n["children"].sort(key=lambda x: (x["sample"].name or "").lower())
-        for c in n["children"]:
-            sort_tree(c)
-
-    for r in roots:
-        sort_tree(r)
-    roots.sort(key=lambda n: (n["sample"].name or "").lower())
-    return roots
 
 
 def _lab_db_path(lab: Database):
@@ -1315,27 +1278,20 @@ def safe_json_loads(text, default=None):
 
 def link_sample_to_experiment_with_lineage(sample, selected_exp, role="other", notes=""):
     """
-    Create SampleExperiment links for the selected experiment AND all of its ancestors.
-    - Selected experiment gets the chosen role.
-    - Ancestors get role='ancestor' (so you can filter/display distinctly).
-    - Avoids duplicate links.
+    Create a SampleExperiment link for the selected experiment only.
+    Avoids duplicate links.
     """
-    chain = get_full_experiment_chain(selected_exp)
-    for exp in chain:
-        role_here = role if exp.id == selected_exp.id else "ancestor"
-        exists = SampleExperiment.query.filter_by(
-            sample_id=sample.id, experiment_id=exp.id, role=role_here
-        ).first()
-        if not exists:
-            link_notes = notes if exp.id == selected_exp.id else (
-                notes or f"via {selected_exp.title}")
-            db.session.add(SampleExperiment(
-                sample_id=sample.id,
-                experiment_id=exp.id,
-                role=role_here,
-                notes=link_notes
-            ))
-    db.session.commit()
+    exists = SampleExperiment.query.filter_by(
+        sample_id=sample.id, experiment_id=selected_exp.id, role=role
+    ).first()
+    if not exists:
+        db.session.add(SampleExperiment(
+            sample_id=sample.id,
+            experiment_id=selected_exp.id,
+            role=role,
+            notes=notes
+        ))
+        db.session.commit()
 
 
 # --- Routes ---
@@ -2412,36 +2368,193 @@ def view_project(project_id, lab_slug=None):
             lab_key = project.database.slug or str(project.database.id)
             return redirect(url_for('view_project', lab_slug=lab_key, project_id=project.id))
 
+    sorted_experiments = sorted(
+        project.experiments or [],
+        key=lambda e: (e.start_at or datetime.min),
+    )
+
+    def _avg_measured_for_log(log):
+        vals = safe_json_loads(log.values_json, [])
+        measured = []
+        if isinstance(vals, list):
+            for item in vals:
+                if isinstance(item, dict) and item.get('measured') is not None:
+                    measured.append(item.get('measured'))
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    measured.append(item[1])
+        if not measured:
+            return None
+        try:
+            return sum(measured) / len(measured)
+        except Exception:
+            return None
+
+    def _experiment_equipment_flags(exp):
+        start_at = getattr(exp, 'start_at', None)
+        end_at = getattr(exp, 'end_at', None) or start_at
+        if not start_at:
+            return []
+        flags = []
+        for link in getattr(exp, 'equipment_links', []) or []:
+            eq = getattr(link, 'equipment', None)
+            if not eq:
+                continue
+            routines = CalibrationRoutine.query.filter_by(equipment_id=eq.id).all()
+            routine_map = {r.name: r for r in routines}
+            logs = (CalibrationLog.query
+                    .filter_by(equipment_id=eq.id)
+                    .filter(CalibrationLog.performed_at.isnot(None))
+                    .order_by(CalibrationLog.performed_at.asc())
+                    .all())
+
+            def _is_out_of_tolerance(log):
+                if not log:
+                    return False, None
+                avg = _avg_measured_for_log(log)
+                if avg is None:
+                    return False, None
+                routine = routine_map.get(log.calibration_type or 'default')
+                if not routine:
+                    return False, None
+                if routine.min_value is not None and avg < routine.min_value:
+                    return True, f"{avg:.4g} < min {routine.min_value}"
+                if routine.max_value is not None and avg > routine.max_value:
+                    return True, f"{avg:.4g} > max {routine.max_value}"
+                return False, None
+
+            start_logs = {}
+            end_logs = {}
+            after_logs = {}
+            for l in logs:
+                cal_type = l.calibration_type or 'default'
+                if l.performed_at <= start_at:
+                    start_logs[cal_type] = l
+                if l.performed_at <= end_at:
+                    end_logs[cal_type] = l
+                if l.performed_at > end_at and cal_type not in after_logs:
+                    after_logs[cal_type] = l
+
+            tol_reasons = []
+            cal_types = set(routine_map.keys()) | set(start_logs.keys()) | set(end_logs.keys()) | set(after_logs.keys())
+            for cal_type in sorted(cal_types):
+                start_log = start_logs.get(cal_type)
+                end_log = end_logs.get(cal_type)
+                next_after_end = after_logs.get(cal_type)
+
+                out, reason = _is_out_of_tolerance(start_log)
+                if out and start_log:
+                    tol_reasons.append(f"{cal_type}: Start check ({start_log.performed_at.date()}): {reason}")
+                out, reason = _is_out_of_tolerance(end_log)
+                if out and end_log:
+                    tol_reasons.append(f"{cal_type}: End check ({end_log.performed_at.date()}): {reason}")
+                out, reason = _is_out_of_tolerance(next_after_end)
+                if out and next_after_end:
+                    tol_reasons.append(f"{cal_type}: After end ({next_after_end.performed_at.date()}): {reason}")
+
+                if not next_after_end:
+                    tol_reasons.append(f"{cal_type}: No calibration after experiment end")
+
+            if not tol_reasons:
+                for l in logs:
+                    if l.performed_at < start_at or l.performed_at > end_at:
+                        continue
+                    out, reason = _is_out_of_tolerance(l)
+                    if out:
+                        tol_reasons.append(f"{l.calibration_type or 'default'}: During ({l.performed_at.date()}): {reason}")
+                        break
+
+            # calibration schedule check
+            cal_reason = None
+            if getattr(eq, 'calibration_interval_days', None):
+                last_cal = (CalibrationLog.query
+                            .filter_by(equipment_id=eq.id)
+                            .filter(CalibrationLog.performed_at <= end_at)
+                            .order_by(CalibrationLog.performed_at.desc())
+                            .first())
+                if not last_cal or not last_cal.performed_at:
+                    cal_reason = 'No calibration on record'
+                else:
+                    due = last_cal.performed_at + timedelta(days=eq.calibration_interval_days)
+                    if due < start_at:
+                        cal_reason = f'Out of calibration before start ({due.date()})'
+                    elif due < end_at:
+                        cal_reason = f'Out of calibration during experiment ({due.date()})'
+            # collect
+            reasons = []
+            categories = []
+            if tol_reasons:
+                reasons.extend(tol_reasons)
+                categories.append('tolerance')
+            if cal_reason:
+                reasons.append(cal_reason)
+                categories.append('calibration')
+            if reasons:
+                flags.append({
+                    'equipment_id': eq.id,
+                    'equipment_name': eq.name,
+                    'reasons': reasons,
+                    'categories': categories,
+                    'url': url_for('view_equipment', lab_slug=(project.database.slug or project.database.id), equipment_id=eq.id) if project and project.database else url_for('view_equipment', equipment_id=eq.id),
+                })
+        return flags
+
+    experiment_negative_flags = {}
+    for exp in sorted_experiments:
+        flags = _experiment_equipment_flags(exp)
+        if flags:
+            labels = []
+            for f in flags:
+                labels.append(f"{f['equipment_name']}: {', '.join(f['reasons'])}")
+            experiment_negative_flags[exp.id] = {
+                'label': '; '.join(labels),
+                'flags': flags,
+            }
+
     roots = (Sample.query
              .filter_by(project_id=project.id, parent_id=None)
              .order_by(Sample.name.asc())
              .all())
     sample_tree = [serialize_sample_tree(r) for r in roots]
-    sample_tree_by_stock = {}
+    sample_tree_by_class = {}
     for r in roots:
         stock_obj = getattr(r, 'stock_material', None)
+        sc = getattr(r, 'sample_class', None) or (getattr(stock_obj, 'sample_class', None) if stock_obj else None)
+        class_label = sc.name if sc else 'No Sample Class'
+        class_key = f"class:{sc.id}" if sc else 'noclass'
+        class_entry = sample_tree_by_class.setdefault(class_key, {
+            'label': class_label,
+            'class_id': sc.id if sc else None,
+            'stocks': {}
+        })
+
         if stock_obj:
-            label = stock_obj.name + (f" — {stock_obj.lot_number}" if stock_obj.lot_number else "")
-            key = f"stock:{stock_obj.id}"
-            entry = sample_tree_by_stock.setdefault(key, {
-                'label': label,
+            stock_label = stock_obj.name + (f" — {stock_obj.lot_number}" if stock_obj.lot_number else "")
+            stock_key = f"stock:{stock_obj.id}"
+            stock_entry = class_entry['stocks'].setdefault(stock_key, {
+                'label': stock_label,
                 'stock_id': stock_obj.id,
                 'roots': []
             })
-            entry['roots'].append(serialize_sample_tree(r))
+            stock_entry['roots'].append(serialize_sample_tree(r))
         else:
-            key = 'nostock'
-            entry = sample_tree_by_stock.setdefault(key, {
+            stock_key = 'nostock'
+            stock_entry = class_entry['stocks'].setdefault(stock_key, {
                 'label': 'No Stock Material',
                 'stock_id': None,
                 'roots': []
             })
-            entry['roots'].append(serialize_sample_tree(r))
-    # sort stock groups (No Stock Material last)
-    sample_tree_by_stock = dict(sorted(
-        sample_tree_by_stock.items(),
-        key=lambda kv: (kv[1]['label'] == 'No Stock Material', kv[1]['label'].lower())
+            stock_entry['roots'].append(serialize_sample_tree(r))
+
+    # sort class groups (No Sample Class last) and stock groups (No Stock Material last)
+    sample_tree_by_class = dict(sorted(
+        sample_tree_by_class.items(),
+        key=lambda kv: (kv[1]['label'] == 'No Sample Class', kv[1]['label'].lower())
     ))
+    for key, entry in sample_tree_by_class.items():
+        entry['stocks'] = dict(sorted(
+            entry['stocks'].items(),
+            key=lambda kv: (kv[1]['label'] == 'No Stock Material', kv[1]['label'].lower())
+        ))
 
     # PI candidates (prefer lab members)
     try:
@@ -2483,8 +2596,10 @@ def view_project(project_id, lab_slug=None):
     return render_template(
         "project.html",
         project=project,
+        sorted_experiments=sorted_experiments,
+        experiment_negative_flags=experiment_negative_flags,
         sample_tree=sample_tree,
-        sample_tree_by_stock=sample_tree_by_stock,
+        sample_tree_by_class=sample_tree_by_class,
         pi_candidates=pi_candidates,
         lab_members=pi_candidates,
         lab_role=lab_role,
@@ -2666,6 +2781,83 @@ def project_timeline(project_id, lab_slug=None):
     return jsonify(grouped)
 
 
+@app.route('/experiment/<int:experiment_id>/timeline')
+@app.route('/lab/<lab_slug>/experiment/<int:experiment_id>/timeline')
+def experiment_timeline(experiment_id, lab_slug=None):
+    exp = Experiment.query.get_or_404(experiment_id)
+    project = exp.project
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if not project or project.database_id != lab.id:
+            abort(403)
+        set_current_lab(lab)
+    else:
+        if project and project.database:
+            lab_key = project.database.slug or str(project.database.id)
+            return redirect(url_for('experiment_timeline', lab_slug=lab_key, experiment_id=exp.id))
+
+    events = []
+    if exp.created_at:
+        events.append({
+            'type': 'created',
+            'timestamp': exp.created_at.isoformat(),
+            'title': exp.title,
+            'id': exp.id,
+            'url': url_for('view_experiment', experiment_id=exp.id)
+        })
+    if getattr(exp, 'start_at', None):
+        events.append({
+            'type': 'start',
+            'timestamp': exp.start_at.isoformat(),
+            'title': exp.title,
+            'id': exp.id,
+            'url': url_for('view_experiment', experiment_id=exp.id)
+        })
+    if getattr(exp, 'end_at', None):
+        events.append({
+            'type': 'end',
+            'timestamp': exp.end_at.isoformat(),
+            'title': exp.title,
+            'id': exp.id,
+            'url': url_for('view_experiment', experiment_id=exp.id)
+        })
+
+    logs = ExperimentLog.query.filter_by(experiment_id=exp.id).all()
+    for l in logs:
+        if l.timestamp:
+            events.append({
+                'type': 'log',
+                'timestamp': l.timestamp.isoformat(),
+                'title': 'Log entry',
+                'id': l.id,
+                'url': url_for('view_experiment', experiment_id=exp.id)
+            })
+
+    for d in getattr(exp, 'documents', []):
+        if d.uploaded_at:
+            events.append({
+                'type': 'document',
+                'timestamp': d.uploaded_at.isoformat(),
+                'title': d.filename,
+                'id': d.id,
+                'url': url_for('view_experiment', experiment_id=exp.id)
+            })
+
+    grouped = {}
+    for ev in events:
+        try:
+            ts = ev.get('timestamp')
+            key = ts[:7]
+        except Exception:
+            key = 'unknown'
+        grouped.setdefault(key, []).append(ev)
+
+    for k in grouped:
+        grouped[k].sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+    return jsonify(grouped)
+
+
 @app.route("/project/<int:project_id>/experiments/create", methods=["POST"])
 def create_experiment(project_id):
     project = Project.query.get_or_404(project_id)
@@ -2702,24 +2894,6 @@ def view_experiment(experiment_id, lab_slug=None, project_id=None):
             lab_key = project.database.slug or str(project.database.id)
             return redirect(url_for('view_experiment', lab_slug=lab_key, project_id=project.id, experiment_id=exp.id))
 
-    # Build exp_tree from root ancestor to show in template
-    root = exp
-    while root.parent:
-        root = root.parent
-    exp_tree = serialize_experiment_tree(root, exp.id)
-
-    # Choices (exclude anything that would cause cycles)
-    all_exps = Experiment.query.filter_by(project_id=exp.project_id).all()
-    # Parent candidates: not self or descendants
-    parent_choices = [
-        e for e in all_exps
-        if e.id != exp.id and not would_create_cycle_as_parent(exp, e)
-    ]
-    # Child candidates: not self or ancestors
-    child_choices = [
-        e for e in all_exps
-        if e.id != exp.id and not would_create_cycle_as_child(exp, e)
-    ]
     # Linked samples: build sample tree but highlight linked ones
     linked_ids = {link.sample_id for link in exp.sample_links}
     sample_roots = [s for s in exp.project.samples if not s.parent_id]
@@ -2736,39 +2910,254 @@ def view_experiment(experiment_id, lab_slug=None, project_id=None):
         # If Equipment has no project_id column yet (older DB), fall back to all equipment
         equipment_choices = Equipment.query.order_by(Equipment.name).all()
 
+    def _avg_measured_for_log(log):
+        vals = safe_json_loads(log.values_json, [])
+        measured = []
+        if isinstance(vals, list):
+            for item in vals:
+                if isinstance(item, dict) and item.get('measured') is not None:
+                    measured.append(item.get('measured'))
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    measured.append(item[1])
+        if not measured:
+            return None
+        try:
+            return sum(measured) / len(measured)
+        except Exception:
+            return None
+
+    equipment_tolerance_flags = {}
+    start_at = getattr(exp, 'start_at', None)
+    end_at = getattr(exp, 'end_at', None) or start_at
+    if start_at:
+        for link in getattr(exp, 'equipment_links', []) or []:
+            eq = getattr(link, 'equipment', None)
+            if not eq:
+                continue
+            routines = CalibrationRoutine.query.filter_by(equipment_id=eq.id).all()
+            routine_map = {r.name: r for r in routines}
+            logs = (CalibrationLog.query
+                    .filter_by(equipment_id=eq.id)
+                    .filter(CalibrationLog.performed_at.isnot(None))
+                    .order_by(CalibrationLog.performed_at.asc())
+                    .all())
+
+            def _is_out_of_tolerance(log):
+                if not log:
+                    return False, None
+                avg = _avg_measured_for_log(log)
+                if avg is None:
+                    return False, None
+                routine = routine_map.get(log.calibration_type or 'default')
+                if not routine:
+                    return False, None
+                if routine.min_value is not None and avg < routine.min_value:
+                    return True, f"{avg:.4g} < min {routine.min_value}"
+                if routine.max_value is not None and avg > routine.max_value:
+                    return True, f"{avg:.4g} > max {routine.max_value}"
+                return False, None
+
+            start_logs = {}
+            end_logs = {}
+            after_logs = {}
+            for l in logs:
+                cal_type = l.calibration_type or 'default'
+                if l.performed_at <= start_at:
+                    start_logs[cal_type] = l
+                if l.performed_at <= end_at:
+                    end_logs[cal_type] = l
+                if l.performed_at > end_at and cal_type not in after_logs:
+                    after_logs[cal_type] = l
+
+            flagged = False
+            reasons = []
+            cal_types = set(routine_map.keys()) | set(start_logs.keys()) | set(end_logs.keys()) | set(after_logs.keys())
+            for cal_type in sorted(cal_types):
+                start_log = start_logs.get(cal_type)
+                end_log = end_logs.get(cal_type)
+                next_after_end = after_logs.get(cal_type)
+
+                out, reason = _is_out_of_tolerance(start_log)
+                if out and start_log:
+                    flagged = True
+                    reasons.append(f"{cal_type}: Start check ({start_log.performed_at.date()}): {reason}")
+                out, reason = _is_out_of_tolerance(end_log)
+                if out and end_log:
+                    flagged = True
+                    reasons.append(f"{cal_type}: End check ({end_log.performed_at.date()}): {reason}")
+
+                out, reason = _is_out_of_tolerance(next_after_end)
+                if out and next_after_end:
+                    flagged = True
+                    reasons.append(f"{cal_type}: After end ({next_after_end.performed_at.date()}): {reason}")
+
+                if not next_after_end:
+                    flagged = True
+                    reasons.append(f"{cal_type}: No calibration after experiment end")
+
+            for l in logs:
+                if l.performed_at < start_at or l.performed_at > end_at:
+                    continue
+                out, reason = _is_out_of_tolerance(l)
+                if out:
+                    flagged = True
+                    reasons.append(f"{l.calibration_type or 'default'}: During ({l.performed_at.date()}): {reason}")
+                    break
+
+            if flagged:
+                equipment_tolerance_flags[eq.id] = {
+                    'label': '; '.join(reasons)
+                }
+
+    equipment_calibration = {}
+    start_at = getattr(exp, 'start_at', None)
+    end_at = getattr(exp, 'end_at', None)
+    for link in getattr(exp, 'equipment_links', []) or []:
+        eq = getattr(link, 'equipment', None)
+        if not eq:
+            continue
+        if not start_at or not end_at:
+            equipment_calibration[eq.id] = {
+                'status': 'unknown',
+                'label': 'Set start/stop dates to check calibration.'
+            }
+            continue
+        if not getattr(eq, 'calibration_interval_days', None):
+            equipment_calibration[eq.id] = {
+                'status': 'no_schedule',
+                'label': 'No calibration schedule.'
+            }
+            continue
+        last_cal = (CalibrationLog.query
+                    .filter_by(equipment_id=eq.id)
+                    .filter(CalibrationLog.performed_at <= end_at)
+                    .order_by(CalibrationLog.performed_at.desc())
+                    .first())
+        if not last_cal or not last_cal.performed_at:
+            equipment_calibration[eq.id] = {
+                'status': 'missing',
+                'label': 'No calibration on record.'
+            }
+            continue
+        due = last_cal.performed_at + timedelta(days=eq.calibration_interval_days)
+        if due < start_at:
+            equipment_calibration[eq.id] = {
+                'status': 'overdue_before',
+                'label': f'Out of calibration before start ({due.date()}).'
+            }
+        elif due < end_at:
+            equipment_calibration[eq.id] = {
+                'status': 'overdue_during',
+                'label': f'Became out of calibration on {due.date()}.'
+            }
+        else:
+            equipment_calibration[eq.id] = {
+                'status': 'ok',
+                'label': f'In calibration through {end_at.date()}.'
+            }
+
+    experiment_equipment_flags = []
+    for link in getattr(exp, 'equipment_links', []) or []:
+        eq = getattr(link, 'equipment', None)
+        if not eq:
+            continue
+        reasons = []
+        categories = set()
+        tol = equipment_tolerance_flags.get(eq.id) if equipment_tolerance_flags else None
+        if tol:
+            reasons.append(tol.get('label') or 'Out of tolerance during experiment period')
+            categories.add('tolerance')
+        cal = equipment_calibration.get(eq.id) if equipment_calibration else None
+        if cal and cal.get('status') in ['overdue_before', 'overdue_during', 'missing']:
+            reasons.append(cal.get('label') or 'Out of calibration period')
+            categories.add('calibration')
+        if reasons:
+            experiment_equipment_flags.append({
+                'equipment_id': eq.id,
+                'equipment_name': eq.name,
+                'reasons': reasons,
+                'categories': sorted(categories),
+                'url': url_for('view_equipment', lab_slug=(exp.project.database.slug or exp.project.database.id), equipment_id=eq.id) if exp.project and exp.project.database else url_for('view_equipment', equipment_id=eq.id),
+            })
+
+    equipment_calibration_title = {}
+    for link in getattr(exp, 'equipment_links', []) or []:
+        eq = getattr(link, 'equipment', None)
+        if not eq:
+            continue
+        days_until_due = None
+        next_due = None
+        try:
+            next_due = eq.next_due_date()
+            if next_due:
+                due_date = next_due.date() if hasattr(next_due, 'date') else next_due
+                days_until_due = (due_date - datetime.utcnow().date()).days
+        except Exception:
+            next_due = None
+            days_until_due = None
+        routines = CalibrationRoutine.query.filter_by(equipment_id=eq.id).all()
+        routine_map = {r.name: r for r in routines}
+        logs = (CalibrationLog.query
+                .filter_by(equipment_id=eq.id)
+                .order_by(CalibrationLog.performed_at.desc(), CalibrationLog.id.desc())
+                .all())
+        out_of_tolerance = False
+        oot_flags = []
+        latest_type_checked = set()
+        for l in logs:
+            if not l.performed_at or not l.values_json:
+                continue
+            cal_type = l.calibration_type or 'default'
+            if cal_type in latest_type_checked:
+                continue
+            latest_type_checked.add(cal_type)
+            avg_measured = _avg_measured_for_log(l)
+            if avg_measured is None:
+                continue
+            routine = routine_map.get(cal_type)
+            if not routine:
+                continue
+            if routine.min_value is not None and avg_measured < routine.min_value:
+                out_of_tolerance = True
+                oot_flags.append({
+                    'type': cal_type,
+                    'unit': routine.unit,
+                    'avg': avg_measured,
+                    'bound': 'min',
+                    'bound_value': routine.min_value,
+                    'performed_at': l.performed_at,
+                })
+            if routine.max_value is not None and avg_measured > routine.max_value:
+                out_of_tolerance = True
+                oot_flags.append({
+                    'type': cal_type,
+                    'unit': routine.unit,
+                    'avg': avg_measured,
+                    'bound': 'max',
+                    'bound_value': routine.max_value,
+                    'performed_at': l.performed_at,
+                })
+
+        equipment_calibration_title[eq.id] = {
+            'out_of_tolerance': out_of_tolerance,
+            'oot_flags': oot_flags,
+            'calibration_status': eq.calibration_status(),
+            'days_until_due': days_until_due,
+        }
+
     return render_template(
         "experiment.html",
         experiment=exp,
-        exp_tree=exp_tree,
-        parent_choices=parent_choices,
-        child_choices=child_choices,
         linked_sample_tree=linked_sample_tree[0] if linked_sample_tree else None,
         linked_sample_ids=linked_ids,
         equipment_choices=equipment_choices,
+        equipment_tolerance_flags=equipment_tolerance_flags,
+        equipment_calibration=equipment_calibration,
+        experiment_equipment_flags=experiment_equipment_flags,
+        equipment_calibration_title=equipment_calibration_title,
         current_lab=exp.project.database,
+        lab_role=db_role(current_user, project.database_id) if project and project.database_id else None,
     )
-
-
-@app.route("/experiment/<int:experiment_id>/split", methods=["POST"])
-def split_experiment(experiment_id):
-    parent = Experiment.query.get_or_404(experiment_id)
-    title = (request.form.get("title") or "").strip()
-    description = (request.form.get("description") or "").strip()
-
-    if not title:
-        flash("Child experiment title is required.", "error")
-        return redirect(url_for("view_experiment", experiment_id=parent.id))
-
-    child = Experiment(
-        project_id=parent.project_id,
-        parent_id=parent.id,
-        title=title,
-        description=description
-    )
-    db.session.add(child)
-    db.session.commit()
-    flash("Child experiment created.", "ok")
-    return redirect(url_for("view_experiment", experiment_id=child.id))
 
 
 @app.route("/experiment/<int:experiment_id>/equipment/add", methods=["POST"])
@@ -2785,6 +3174,33 @@ def add_experiment_equipment(experiment_id):
     db.session.add(link)
     db.session.commit()
     flash("Equipment linked.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=exp.id))
+
+
+@app.route("/experiment/<int:experiment_id>/samples/update", methods=["POST"])
+def update_experiment_samples(experiment_id):
+    exp = Experiment.query.get_or_404(experiment_id)
+    role = db_role(current_user, exp.project.database_id) if exp.project and exp.project.database_id else None
+    if role not in ("owner", "admin", "editor"):
+        abort(403)
+
+    selected_ids = set([int(x) for x in request.form.getlist("sample_ids") if str(x).isdigit()])
+    project_sample_ids = {s.id for s in exp.project.samples}
+    selected_ids = selected_ids.intersection(project_sample_ids)
+
+    existing_links = SampleExperiment.query.filter_by(experiment_id=exp.id).all()
+    existing_ids = {l.sample_id for l in existing_links}
+
+    for link in existing_links:
+        if link.sample_id not in selected_ids:
+            db.session.delete(link)
+
+    for sid in selected_ids:
+        if sid not in existing_ids:
+            db.session.add(SampleExperiment(sample_id=sid, experiment_id=exp.id, role="other"))
+
+    db.session.commit()
+    flash("Linked samples updated.", "ok")
     return redirect(url_for("view_experiment", experiment_id=exp.id))
 
 
@@ -2835,42 +3251,6 @@ def experiment_create_child_sample(experiment_id):
     return redirect(url_for("view_experiment", experiment_id=exp.id))
 
 
-@app.route("/experiment/<int:experiment_id>/reparent", methods=["POST"])
-def reparent_experiment(experiment_id):
-    exp = Experiment.query.get_or_404(experiment_id)
-    new_parent_id = request.form.get("parent_id", type=int)
-
-    # Clear parent (make root)
-    if not new_parent_id:
-        exp.parent_id = None
-        db.session.commit()
-        flash("Parent cleared (experiment is now a root).", "ok")
-        return redirect(url_for("view_experiment", experiment_id=exp.id))
-
-    parent = Experiment.query.get_or_404(new_parent_id)
-
-    # Guardrails
-    if parent.id == exp.id:
-        flash("An experiment cannot be its own parent.", "error")
-        return redirect(url_for("view_experiment", experiment_id=exp.id))
-    if parent.project_id != exp.project_id:
-        flash("Parent must be in the same project.", "error")
-        return redirect(url_for("view_experiment", experiment_id=exp.id))
-
-    # Prevent cycles: walk up the ancestry
-    cur = parent
-    while cur:
-        if cur.id == exp.id:
-            flash("Invalid parent: would create a cycle.", "error")
-            return redirect(url_for("view_experiment", experiment_id=exp.id))
-        cur = cur.parent
-
-    exp.parent_id = parent.id
-    db.session.commit()
-    flash("Parent updated.", "ok")
-    return redirect(url_for("view_experiment", experiment_id=exp.id))
-
-
 @app.route("/experiment/<int:experiment_id>/upload", methods=["POST"])
 def upload_document(experiment_id):
     experiment = Experiment.query.get_or_404(experiment_id)
@@ -2881,28 +3261,27 @@ def upload_document(experiment_id):
     if not allowed_file(file.filename):
         flash("File type not allowed.", "error")
         return redirect(url_for("view_experiment", experiment_id=experiment.id))
-
-    filename = secure_filename(file.filename)
     folder = exp_upload_dir(experiment.project_id, experiment.id)
-    stored_path = os.path.join(folder, filename)
-
-    # Avoid overwrite by appending counter
-    base, ext = os.path.splitext(filename)
-    i = 1
-    while os.path.exists(stored_path):
-        filename = f"{base}({i}){ext}"
-        stored_path = os.path.join(folder, filename)
-        i += 1
-
-    file.save(stored_path)
+    stored_path, _ = save_uploaded_file(file, folder)
     doc = Document(
         experiment=experiment,
         filename=file.filename,  # original
         stored_path=stored_path,
         mimetype=file.mimetype,
+        uploaded_by_user_id=_uid(),
     )
     db.session.add(doc)
     db.session.commit()
+    try:
+        log_lab_event(experiment.project.database, "document_uploaded", "experiment", experiment.id, file.filename, {"doc_id": doc.id})
+    except Exception:
+        pass
+    try:
+        user_label = current_user.name or current_user.email if getattr(current_user, "is_authenticated", False) else None
+        db.session.add(ExperimentLog(experiment_id=experiment.id, user=user_label, notes=f"Uploaded document: {file.filename}"))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
     flash("File uploaded.", "ok")
     return redirect(url_for("view_experiment", experiment_id=experiment.id))
 
@@ -2910,9 +3289,37 @@ def upload_document(experiment_id):
 @app.route("/download/<int:doc_id>")
 def download(doc_id):
     d = Document.query.get_or_404(doc_id)
-    directory, name = os.path.dirname(
-        d.stored_path), os.path.basename(d.stored_path)
-    return send_from_directory(directory, name, as_attachment=True, download_name=d.filename)
+    return send_stored_file(d.stored_path, d.filename)
+
+
+@app.post("/experiment/doc/<int:doc_id>/delete")
+@login_required
+def delete_experiment_doc(doc_id):
+    d = Document.query.get_or_404(doc_id)
+    experiment = d.experiment
+    project = experiment.project if experiment else None
+    if not project or not can_edit_project(project, current_user):
+        abort(403)
+    try:
+        if d.stored_path and os.path.exists(d.stored_path):
+            os.remove(d.stored_path)
+    except Exception:
+        pass
+    filename = d.filename
+    db.session.delete(d)
+    db.session.commit()
+    try:
+        log_lab_event(project.database, "document_deleted", "experiment", experiment.id, filename, {"doc_id": doc_id})
+    except Exception:
+        pass
+    try:
+        user_label = current_user.name or current_user.email if getattr(current_user, "is_authenticated", False) else None
+        db.session.add(ExperimentLog(experiment_id=experiment.id, user=user_label, notes=f"Deleted document: {filename}"))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    flash("Document deleted.", "ok")
+    return redirect(url_for("view_experiment", experiment_id=experiment.id))
 
 
 # ---- Samples ----
@@ -3198,7 +3605,283 @@ def list_equipment_for_lab(lab_slug):
                .all())
     else:
         eqs = Equipment.query.filter(Equipment.database_id == lab.id).order_by(Equipment.name.asc()).all()
-    return render_template('equipment.html', equipment=eqs, current_lab=lab, lab_role=lab_role)
+    facilities = Facility.query.filter_by(database_id=lab.id).order_by(Facility.name.asc()).all()
+    updated = False
+    for fac in facilities:
+        if not fac.slug:
+            fac.slug = generate_facility_slug(fac.name, lab.id, exclude_id=fac.id)
+            updated = True
+    if updated:
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+    return render_template('equipment.html', equipment=eqs, current_lab=lab, lab_role=lab_role, facilities=facilities)
+
+
+@app.route('/equipment/<int:equipment_id>')
+@app.route('/lab/<lab_slug>/equipment/<int:equipment_id>')
+def view_equipment(equipment_id, lab_slug=None):
+    eq = Equipment.query.get_or_404(equipment_id)
+    eq_lab = eq.database or (eq.project.database if eq.project else None)
+
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if eq_lab and eq_lab.id != lab.id:
+            abort(403)
+        set_current_lab(lab)
+    else:
+        if eq_lab:
+            lab_key = eq_lab.slug or str(eq_lab.id)
+            return redirect(url_for('view_equipment', lab_slug=lab_key, equipment_id=eq.id))
+        lab = None
+
+    lab = lab if lab_slug else eq_lab
+    lab_role = db_role(current_user, lab.id) if lab else None
+    maintenance_logs = MaintenanceLog.query.filter_by(equipment_id=eq.id).order_by(MaintenanceLog.performed_at.desc()).all()
+    calibration_logs = CalibrationLog.query.filter_by(equipment_id=eq.id).order_by(CalibrationLog.performed_at.desc(), CalibrationLog.id.desc()).all()
+    sorted_cal_logs = sorted(calibration_logs, key=lambda l: l.performed_at or datetime.min, reverse=True)
+    calibration_routines = CalibrationRoutine.query.filter_by(equipment_id=eq.id).order_by(CalibrationRoutine.name.asc()).all()
+    experiment_links = ExperimentEquipment.query.filter_by(equipment_id=eq.id).all()
+
+    last_calibration = eq.last_calibration()
+    next_due_date = eq.next_due_date()
+    calibration_status = eq.calibration_status()
+    days_until_due = None
+    if next_due_date:
+        try:
+            due_date = next_due_date.date() if hasattr(next_due_date, 'date') else next_due_date
+            days_until_due = (due_date - datetime.utcnow().date()).days
+        except Exception:
+            days_until_due = None
+
+    routine_map = {}
+    for r in calibration_routines:
+        routine_map[r.name] = {
+            'unit': r.unit,
+            'standard': r.standard,
+            'min_value': r.min_value,
+            'max_value': r.max_value,
+            'required_measurements': r.required_measurements,
+        }
+
+    routine_status = {}
+    for l in calibration_logs:
+        if not l.performed_at:
+            continue
+        cal_type = l.calibration_type or 'default'
+        if cal_type in routine_status:
+            continue
+        routine_status[cal_type] = {
+            'last_performed': l.performed_at,
+            'next_due': l.next_due_date,
+        }
+
+    chart_points = []
+    log_values_map = {}
+    for l in calibration_logs:
+        if not l.performed_at:
+            continue
+        vals = safe_json_loads(l.values_json, [])
+        measured = []
+        if isinstance(vals, list):
+            for item in vals:
+                if isinstance(item, dict) and item.get('measured') is not None:
+                    measured.append(item.get('measured'))
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    measured.append(item[1])
+        avg_measured = None
+        if measured:
+            try:
+                avg_measured = sum(measured) / len(measured)
+            except Exception:
+                avg_measured = None
+        if measured:
+            log_values_map[str(l.id)] = measured
+        chart_points.append({
+            'performed_at': l.performed_at.isoformat(),
+            'calibration_type': l.calibration_type or 'default',
+            'avg_measured': avg_measured,
+        })
+
+    type_keys = set(routine_map.keys())
+    for l in calibration_logs:
+        type_keys.add(l.calibration_type or 'default')
+
+    experiment_markers_by_type = {t: [] for t in type_keys}
+    logs_by_type = {t: [] for t in type_keys}
+    for l in calibration_logs:
+        if not l.performed_at:
+            continue
+        cal_type = l.calibration_type or 'default'
+        if cal_type not in logs_by_type:
+            logs_by_type[cal_type] = []
+        logs_by_type[cal_type].append(l)
+    for t in logs_by_type:
+        logs_by_type[t].sort(key=lambda l: l.performed_at)
+
+    def _avg_measured(log):
+        vals = safe_json_loads(log.values_json, [])
+        measured = []
+        if isinstance(vals, list):
+            for item in vals:
+                if isinstance(item, dict) and item.get('measured') is not None:
+                    measured.append(item.get('measured'))
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    measured.append(item[1])
+        if not measured:
+            return None
+        try:
+            return sum(measured) / len(measured)
+        except Exception:
+            return None
+
+    def _is_out_of_tolerance(log):
+        if not log:
+            return False
+        avg = _avg_measured(log)
+        if avg is None:
+            return False
+        routine = routine_map.get(log.calibration_type or 'default')
+        if not routine:
+            return False
+        min_v = routine.get('min_value')
+        max_v = routine.get('max_value')
+        if min_v is not None and avg < min_v:
+            return True
+        if max_v is not None and avg > max_v:
+            return True
+        return False
+
+    def _flagged_for_experiment(logs_asc, start_at, end_at):
+        if not start_at or not end_at:
+            return False
+        if not logs_asc:
+            return False
+        start_log = None
+        end_log = None
+        next_after_end = None
+        for l in logs_asc:
+            if l.performed_at <= start_at:
+                start_log = l
+            if l.performed_at <= end_at:
+                end_log = l
+            if l.performed_at > end_at and next_after_end is None:
+                next_after_end = l
+        if _is_out_of_tolerance(start_log) or _is_out_of_tolerance(end_log) or _is_out_of_tolerance(next_after_end):
+            return True
+        for l in logs_asc:
+            if l.performed_at < start_at or l.performed_at > end_at:
+                continue
+            if _is_out_of_tolerance(l):
+                return True
+        return False
+
+    for link in experiment_links:
+        exp = link.experiment
+        if not exp:
+            continue
+        start_at = getattr(exp, 'start_at', None)
+        end_at = getattr(exp, 'end_at', None)
+        for t in type_keys:
+            logs_asc = logs_by_type.get(t, [])
+            flagged = _flagged_for_experiment(logs_asc, start_at, end_at)
+            if getattr(exp, 'start_at', None):
+                experiment_markers_by_type[t].append({
+                    'type': 'start',
+                    'timestamp': exp.start_at.isoformat(),
+                    'title': exp.title,
+                    'flagged': flagged,
+                    'url': url_for('view_experiment', lab_slug=lab.slug, experiment_id=exp.id) if lab else url_for('view_experiment', experiment_id=exp.id),
+                })
+            if getattr(exp, 'end_at', None):
+                experiment_markers_by_type[t].append({
+                    'type': 'end',
+                    'timestamp': exp.end_at.isoformat(),
+                    'title': exp.title,
+                    'flagged': flagged,
+                    'url': url_for('view_experiment', lab_slug=lab.slug, experiment_id=exp.id) if lab else url_for('view_experiment', experiment_id=exp.id),
+                })
+
+    out_of_tolerance = False
+    oot_label = None
+    oot_flags = []
+    tolerance_map = {}
+    latest_type_checked = set()
+    for l in calibration_logs:
+        if not l.performed_at or not l.values_json:
+            continue
+        cal_type = l.calibration_type or 'default'
+        if cal_type in latest_type_checked:
+            continue
+        avg_measured = _avg_measured(l)
+        latest_type_checked.add(cal_type)
+        if avg_measured is None:
+            continue
+        routine = routine_map.get(cal_type)
+        if routine and avg_measured is not None:
+            min_v = routine.get('min_value')
+            max_v = routine.get('max_value')
+            unit = routine.get('unit')
+            performed_at = l.performed_at
+            is_out = False
+            if min_v is not None and avg_measured < min_v:
+                is_out = True
+                out_of_tolerance = True
+                oot_flags.append({
+                    'type': cal_type,
+                    'unit': unit,
+                    'avg': avg_measured,
+                    'bound': 'min',
+                    'bound_value': min_v,
+                    'performed_at': performed_at,
+                })
+            if max_v is not None and avg_measured > max_v:
+                is_out = True
+                out_of_tolerance = True
+                oot_flags.append({
+                    'type': cal_type,
+                    'unit': unit,
+                    'avg': avg_measured,
+                    'bound': 'max',
+                    'bound_value': max_v,
+                    'performed_at': performed_at,
+                })
+            tolerance_map[cal_type] = is_out
+    if oot_flags:
+        oot_label = "; ".join([
+            f"{f['type']}: {f['avg']:.4g} {('<' if f['bound'] == 'min' else '>')} {f['bound']} {f['bound_value']}"
+            for f in oot_flags
+        ])
+
+    lab_members = lab.members if lab else []
+    facilities = Facility.query.filter_by(database_id=lab.id).order_by(Facility.name.asc()).all() if lab else []
+    return render_template(
+        'equipment_view.html',
+        equipment=eq,
+        current_lab=lab,
+        lab_role=lab_role,
+        lab_members=lab_members,
+        maintenance_logs=maintenance_logs,
+        calibration_logs=calibration_logs,
+        sorted_cal_logs=sorted_cal_logs,
+        calibration_routines=calibration_routines,
+        routine_map=routine_map,
+        chart_points=chart_points,
+        log_values_map=log_values_map,
+        experiment_markers_by_type=experiment_markers_by_type,
+        out_of_tolerance=out_of_tolerance,
+        oot_label=oot_label,
+        oot_flags=oot_flags,
+        tolerance_map=tolerance_map,
+        routine_status=routine_status,
+        experiment_links=experiment_links,
+        last_calibration=last_calibration,
+        next_due_date=next_due_date,
+        days_until_due=days_until_due,
+        calibration_status=calibration_status,
+        facilities=facilities,
+    )
 
 
 @app.route('/facilities')
@@ -3424,6 +4107,7 @@ def create_equipment_for_lab(lab_slug):
         except Exception:
             purchase_date = None
 
+    facility_id = request.form.get('facility_id', type=int)
     eq = Equipment(
         name=name,
         model=(request.form.get('model') or '').strip(),
@@ -3433,6 +4117,7 @@ def create_equipment_for_lab(lab_slug):
         purchase_date=purchase_date,
         status=(request.form.get('status') or 'active').strip(),
         database_id=lab.id,
+        facility_id=facility_id,
     )
     db.session.add(eq)
     db.session.commit()
@@ -3468,9 +4153,295 @@ def edit_equipment_for_lab(lab_slug, equipment_id):
         except Exception:
             pass
 
+    facility_id = request.form.get('facility_id', type=int)
+    eq.facility_id = facility_id
     db.session.commit()
     flash('Equipment updated.', 'ok')
     return redirect(url_for('list_equipment_for_lab', lab_slug=lab.slug))
+
+
+@app.route('/lab/<lab_slug>/equipment/<int:equipment_id>/calibration/routine', methods=['POST'])
+def set_equipment_calibration_routine(lab_slug, equipment_id):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    role = db_role(current_user, lab.id)
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+
+    eq = Equipment.query.get_or_404(equipment_id)
+    if eq.database_id != lab.id:
+        abort(403)
+
+    interval_raw = (request.form.get('calibration_interval_days') or '').strip()
+    if interval_raw == '':
+        eq.calibration_interval_days = None
+    else:
+        try:
+            interval_val = int(interval_raw)
+            if interval_val <= 0:
+                raise ValueError('Interval must be positive')
+            eq.calibration_interval_days = interval_val
+        except Exception:
+            flash('Calibration interval must be a positive whole number (days).', 'error')
+            return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+    db.session.commit()
+    flash('Calibration routine updated.', 'ok')
+    return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+
+@app.route('/lab/<lab_slug>/equipment/<int:equipment_id>/calibration/type/add', methods=['POST'])
+def add_equipment_calibration_type(lab_slug, equipment_id):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    role = db_role(current_user, lab.id)
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+
+    eq = Equipment.query.get_or_404(equipment_id)
+    if eq.database_id != lab.id:
+        abort(403)
+
+    name = (request.form.get('name') or '').strip()
+    unit = (request.form.get('unit') or '').strip()
+    standard = (request.form.get('standard') or '').strip()
+    min_raw = (request.form.get('min_value') or '').strip()
+    max_raw = (request.form.get('max_value') or '').strip()
+    req_raw = (request.form.get('required_measurements') or '').strip()
+
+    if not name:
+        flash('Calibration type is required.', 'error')
+        return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+    min_val = None
+    max_val = None
+    req_val = None
+    try:
+        if min_raw != '':
+            min_val = float(min_raw)
+        if max_raw != '':
+            max_val = float(max_raw)
+        if req_raw != '':
+            req_val = int(req_raw)
+            if req_val <= 0:
+                raise ValueError('required_measurements must be positive')
+    except Exception:
+        flash('Invalid numeric values for min/max/required measurements.', 'error')
+        return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+    routine = CalibrationRoutine(
+        equipment_id=eq.id,
+        name=name,
+        measurement='',
+        unit=unit or None,
+        standard=standard or None,
+        min_value=min_val,
+        max_value=max_val,
+        required_measurements=req_val,
+    )
+    db.session.add(routine)
+    db.session.commit()
+    flash('Calibration type added.', 'ok')
+    return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+
+@app.route('/lab/<lab_slug>/equipment/<int:equipment_id>/calibration/type/<int:routine_id>/delete', methods=['POST'])
+def delete_equipment_calibration_type(lab_slug, equipment_id, routine_id):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    role = db_role(current_user, lab.id)
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+
+    eq = Equipment.query.get_or_404(equipment_id)
+    if eq.database_id != lab.id:
+        abort(403)
+
+    routine = CalibrationRoutine.query.get_or_404(routine_id)
+    if routine.equipment_id != eq.id:
+        abort(403)
+
+    db.session.delete(routine)
+    db.session.commit()
+    flash('Calibration type deleted.', 'ok')
+    return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+
+@app.route('/lab/<lab_slug>/equipment/<int:equipment_id>/calibration/log', methods=['POST'])
+def add_calibration_log(lab_slug, equipment_id):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    role = db_role(current_user, lab.id)
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+
+    eq = Equipment.query.get_or_404(equipment_id)
+    if eq.database_id != lab.id:
+        abort(403)
+
+    calibration_type = (request.form.get('calibration_type') or '').strip()
+    performed_by = (request.form.get('performed_by') or '').strip()
+    performed_raw = (request.form.get('performed_at') or '').strip()
+    temperature_raw = (request.form.get('temperature') or '').strip()
+    measurements_raw = (request.form.get('measurements') or '').strip()
+    measurements_list = request.form.getlist('measurements')
+
+    performed_at = datetime.utcnow()
+    if performed_raw:
+        try:
+            performed_at = datetime.fromisoformat(performed_raw)
+        except Exception:
+            flash('Invalid calibration date/time.', 'error')
+            return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+    temperature = None
+    if temperature_raw:
+        try:
+            temperature = float(temperature_raw)
+        except Exception:
+            flash('Temperature must be a number.', 'error')
+            return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+    measurements = []
+    if measurements_list:
+        for val in measurements_list:
+            v = (val or '').strip()
+            if not v:
+                continue
+            try:
+                measurements.append(float(v))
+            except Exception:
+                flash('Measurements must be numbers.', 'error')
+                return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+    elif measurements_raw:
+        raw_parts = []
+        for line in measurements_raw.splitlines():
+            raw_parts.extend([p for p in line.split(',')])
+        for p in raw_parts:
+            val = p.strip()
+            if not val:
+                continue
+            try:
+                measurements.append(float(val))
+            except Exception:
+                flash('Measurements must be numbers (comma or newline separated).', 'error')
+                return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+    routine = None
+    if calibration_type:
+        routine = CalibrationRoutine.query.filter_by(equipment_id=eq.id, name=calibration_type).first()
+
+    if routine and routine.required_measurements:
+        if len(measurements) < routine.required_measurements:
+            flash(f'At least {routine.required_measurements} measurements are required for this calibration type.', 'error')
+            return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+    values_json = None
+    if measurements:
+        values_json = json.dumps([{'measured': v} for v in measurements])
+
+    next_due_date = None
+    if eq.calibration_interval_days:
+        try:
+            next_due_date = performed_at + timedelta(days=eq.calibration_interval_days)
+        except Exception:
+            next_due_date = None
+
+    log = CalibrationLog(
+        equipment_id=eq.id,
+        performed_by=performed_by or None,
+        performed_at=performed_at,
+        temperature=temperature,
+        values_json=values_json,
+        calibration_type=calibration_type or None,
+        next_due_date=next_due_date,
+    )
+    db.session.add(log)
+    db.session.commit()
+    flash('Calibration logged.', 'ok')
+    return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+
+@app.route('/lab/<lab_slug>/calibration/log/<int:log_id>/edit', methods=['POST'])
+def edit_calibration_log(lab_slug, log_id):
+    lab = get_lab_or_404(lab_slug)
+    set_current_lab(lab)
+    role = db_role(current_user, lab.id)
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+
+    log = CalibrationLog.query.get_or_404(log_id)
+    eq = Equipment.query.get_or_404(log.equipment_id)
+    if eq.database_id != lab.id:
+        abort(403)
+
+    calibration_type = (request.form.get('calibration_type') or '').strip()
+    performed_by = (request.form.get('performed_by') or '').strip()
+    performed_raw = (request.form.get('performed_at') or '').strip()
+    measurements_raw = (request.form.get('measurements') or '').strip()
+    measurements_list = request.form.getlist('measurements')
+
+    performed_at = log.performed_at or datetime.utcnow()
+    if performed_raw:
+        try:
+            performed_at = datetime.fromisoformat(performed_raw)
+        except Exception:
+            flash('Invalid calibration date/time.', 'error')
+            return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+    measurements = []
+    if measurements_list:
+        for val in measurements_list:
+            v = (val or '').strip()
+            if not v:
+                continue
+            try:
+                measurements.append(float(v))
+            except Exception:
+                flash('Measurements must be numbers.', 'error')
+                return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+    elif measurements_raw:
+        raw_parts = []
+        for line in measurements_raw.splitlines():
+            raw_parts.extend([p for p in line.split(',')])
+        for p in raw_parts:
+            val = p.strip()
+            if not val:
+                continue
+            try:
+                measurements.append(float(val))
+            except Exception:
+                flash('Measurements must be numbers (comma or newline separated).', 'error')
+                return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+    routine = None
+    if calibration_type:
+        routine = CalibrationRoutine.query.filter_by(equipment_id=eq.id, name=calibration_type).first()
+
+    if routine and routine.required_measurements:
+        if len(measurements) < routine.required_measurements:
+            flash(f'At least {routine.required_measurements} measurements are required for this calibration type.', 'error')
+            return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
+
+    values_json = None
+    if measurements:
+        values_json = json.dumps([{'measured': v} for v in measurements])
+
+    next_due_date = None
+    if eq.calibration_interval_days:
+        try:
+            next_due_date = performed_at + timedelta(days=eq.calibration_interval_days)
+        except Exception:
+            next_due_date = None
+
+    log.calibration_type = calibration_type or None
+    log.performed_by = performed_by or None
+    log.performed_at = performed_at
+    log.values_json = values_json
+    log.next_due_date = next_due_date
+    db.session.commit()
+    flash('Calibration log updated.', 'ok')
+    return redirect(url_for('view_equipment', lab_slug=lab.slug, equipment_id=eq.id))
 
 
 @app.route('/sample-classes/create', methods=['POST'])
@@ -3604,28 +4575,46 @@ def create_sample_for_lab(lab_slug):
     # Determine stock material and sample class (inherited from stock material)
     from_stock = (request.form.get('from_stock') or '').strip().lower() == 'yes'
     stock_material_id = request.form.get('stock_material_id', type=int)
+    extra_stock_ids = [int(x) for x in request.form.getlist('stock_material_id_extra') if str(x).strip().isdigit()]
     new_qty = request.form.get('stock_new_quantity', type=float)
     sample_qty = request.form.get('sample_quantity', type=float)
+    if not from_stock:
+        extra_stock_ids = []
     if parent:
         root = get_sample_root(parent)
         stock_material_id = getattr(root, 'stock_material_id', None)
+        extra_stock_ids = []
         if not stock_material_id:
             flash('Parent sample has no stock material to inherit.', 'error')
             return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
     else:
         if from_stock and not stock_material_id:
-            flash('Stock material is required when origin is stock.', 'error')
-            return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+            if not extra_stock_ids:
+                flash('Stock material is required when origin is stock.', 'error')
+                return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+            stock_material_id = extra_stock_ids[0]
 
     mat = StockMaterial.query.get(stock_material_id) if stock_material_id else None
-    if mat and mat.database_id != lab.id:
-        flash('Invalid stock material for this lab.', 'error')
-        return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+    mats = []
+    if mat:
+        mats.append(mat)
+    for mid in extra_stock_ids:
+        if mat and mid == mat.id:
+            continue
+        mobj = StockMaterial.query.get(mid)
+        if mobj:
+            mats.append(mobj)
 
-    if mat and mat.created_at:
-        if datetime.utcnow() < mat.created_at:
-            flash('Cannot create a sample before the stock material was received into inventory.', 'error')
+    for mobj in mats:
+        if mobj.database_id != lab.id:
+            flash('Invalid stock material for this lab.', 'error')
             return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+
+    for mobj in mats:
+        if mobj and mobj.created_at:
+            if datetime.utcnow() < mobj.created_at:
+                flash('Cannot create a sample before the stock material was received into inventory.', 'error')
+                return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
 
     if mat and from_stock and not parent:
         if new_qty is None:
@@ -3635,13 +4624,35 @@ def create_sample_for_lab(lab_slug):
             flash('Sample quantity is required when splitting from stock material.', 'error')
             return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
 
-    sample_class_id = root.sample_class_id if root and getattr(root, 'sample_class_id', None) else (mat.sample_class_id if mat else None)
+    extra_qty_raw = request.form.getlist('stock_use_qty_extra')
+    extra_qty = []
+    for v in extra_qty_raw:
+        try:
+            extra_qty.append(float(v))
+        except Exception:
+            extra_qty.append(None)
+    if extra_stock_ids and from_stock and not parent:
+        if len(extra_qty) < len(extra_stock_ids) or any(q is None for q in extra_qty[:len(extra_stock_ids)]):
+            flash('Quantity used is required for each additional stock material.', 'error')
+            return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get('view', 'project')))
+
+    sample_class_id = root.sample_class_id if root and getattr(root, 'sample_class_id', None) else None
+    if not sample_class_id:
+        if len(mats) == 1 and mat:
+            sample_class_id = mat.sample_class_id
+        elif len(mats) > 1:
+            class_ids = {getattr(mobj, 'sample_class_id', None) for mobj in mats}
+            class_ids = {c for c in class_ids if c}
+            if len(class_ids) == 1:
+                sample_class_id = class_ids.pop()
+    if request.form.get('sample_class_id'):
+        sample_class_id = request.form.get('sample_class_id', type=int)
 
     # Handle sample class attributes (lab-level classes)
     class_attrs = []
     class_values = {}
     inherit_from_parent = bool(root and getattr(root, 'class_attrs_json', None))
-    inherit_from_stock = bool(mat and from_stock and not parent and getattr(mat, 'class_attrs_json', None))
+    inherit_from_stock = bool(mat and from_stock and not parent and getattr(mat, 'class_attrs_json', None) and len(mats) == 1)
     if inherit_from_parent:
         class_values = safe_json_loads(getattr(root, 'class_attrs_json', None), {})
     elif inherit_from_stock:
@@ -3758,6 +4769,35 @@ def create_sample_for_lab(lab_slug):
             delta=delta,
             note=note
         ))
+        db.session.add(SampleStockMaterial(sample_id=sample.id, stock_material_id=mat.id, quantity_used=sample_qty))
+        db.session.commit()
+
+    if extra_stock_ids and from_stock and not parent:
+        for idx, mid in enumerate(extra_stock_ids):
+            mobj = StockMaterial.query.get(mid)
+            if not mobj:
+                continue
+            qty_used = extra_qty[idx] if idx < len(extra_qty) else None
+            before_qty = mobj.quantity
+            new_qty_calc = None
+            if before_qty is not None and qty_used is not None:
+                new_qty_calc = before_qty - qty_used
+                if new_qty_calc < 0:
+                    flash(f'Quantity used exceeds available stock for {mobj.name}.', 'error')
+                    return redirect(url_for('list_samples_for_lab', lab_slug=lab.slug, view=request.args.get("view", "project")))
+                mobj.quantity = new_qty_calc
+            delta = (new_qty_calc - before_qty) if (before_qty is not None and new_qty_calc is not None) else None
+            unit = mobj.unit or ''
+            note = f"Sample mix qty: {qty_used}{(' ' + unit) if unit else ''}" if qty_used is not None else None
+            db.session.add(StockMaterialQuantityLog(
+                stock_material_id=mobj.id,
+                sample_id=sample.id,
+                quantity_before=before_qty,
+                quantity_after=new_qty_calc,
+                delta=delta,
+                note=note
+            ))
+            db.session.add(SampleStockMaterial(sample_id=sample.id, stock_material_id=mobj.id, quantity_used=qty_used))
         db.session.commit()
 
     # NEW: link to experiment + all ancestors (enforce same-project)
@@ -3848,17 +4888,24 @@ def view_sample(sample_id, lab_slug=None, project_id=None):
     exp_choices = Experiment.query.filter_by(
         project_id=sample.project_id).order_by(Experiment.created_at.desc()).all()
 
+    lab_role = db_role(current_user, project.database_id) if project and project.database_id else None
+
     # lineage & tree (if you already added them) ...
     lineage = get_sample_lineage(sample)
 
     # Build defs for display + editing
     attrs = get_project_attrs(sample.project_id)
     val_by_attr = {v.attribute_id: v for v in sample.attribute_values}
+    root = get_sample_root(sample)
+    root_vals_by_attr = {v.attribute_id: v for v in getattr(root, 'attribute_values', [])} if root else {}
 
     needs_update = 0
     attr_defs = []
     for a in attrs:
-        v = val_by_attr.get(a.id)
+        if getattr(a, 'inherited', False) and sample.parent_id:
+            v = root_vals_by_attr.get(a.id)
+        else:
+            v = val_by_attr.get(a.id)
         value = v.value if v else ""
         placeholder = (v.is_placeholder if v else True) if value == "PLEASE UPDATE" or (
             not v) else bool(v.is_placeholder)
@@ -3876,6 +4923,208 @@ def view_sample(sample_id, lab_slug=None, project_id=None):
             "unit": a.unit or ""
         })
 
+    # Sample class attributes (display/edit)
+    class_attr_defs = []
+    class_attrs_values = safe_json_loads(getattr(sample, 'class_attrs_json', None), {})
+    class_attrs_inherited = False
+    if sample.parent_id:
+        class_attrs_inherited = True
+        if root and getattr(root, 'class_attrs_json', None):
+            class_attrs_values = safe_json_loads(getattr(root, 'class_attrs_json', None), {})
+    elif sample.stock_material and getattr(sample.stock_material, 'class_attrs_json', None):
+        class_attrs_inherited = True
+        class_attrs_values = safe_json_loads(getattr(sample.stock_material, 'class_attrs_json', None), {})
+
+    sc = getattr(sample, 'sample_class', None)
+    psc = getattr(sample, 'project_class', None)
+    base_class = sc or getattr(psc, 'sample_class', None)
+    base_attrs_json = getattr(base_class, 'attributes_json', None)
+    if base_attrs_json:
+        base_attrs = safe_json_loads(base_attrs_json, [])
+        if psc and getattr(psc, 'attributes_override_json', None):
+            override = safe_json_loads(psc.attributes_override_json, [])
+            merged = []
+            names = {a.get('name'): a for a in override if isinstance(a, dict)}
+            for a in base_attrs:
+                if isinstance(a, dict) and a.get('name') in names:
+                    merged.append(names.pop(a.get('name')))
+                else:
+                    merged.append(a)
+            merged.extend(names.values())
+        else:
+            merged = base_attrs
+
+        for a in merged:
+            if not isinstance(a, dict):
+                continue
+            aname = a.get('name')
+            if not aname:
+                continue
+            slug = re.sub('[^0-9a-z]+', '_', (aname or '').lower())
+            class_attr_defs.append({
+                "name": aname,
+                "field_type": a.get('field_type') or 'text',
+                "required": bool(a.get('required')),
+                "choices": a.get('choices') or [],
+                "unit": a.get('unit') or "",
+                "value": class_attrs_values.get(aname, ""),
+                "form_key": f"sc_{slug}",
+            })
+
+    def _avg_measured_for_log(log):
+        vals = safe_json_loads(log.values_json, [])
+        measured = []
+        if isinstance(vals, list):
+            for item in vals:
+                if isinstance(item, dict) and item.get('measured') is not None:
+                    measured.append(item.get('measured'))
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    measured.append(item[1])
+        if not measured:
+            return None
+        try:
+            return sum(measured) / len(measured)
+        except Exception:
+            return None
+
+    def _experiment_equipment_flags(exp):
+        start_at = getattr(exp, 'start_at', None)
+        end_at = getattr(exp, 'end_at', None) or start_at
+        if not start_at:
+            return []
+        flags = []
+        for link in getattr(exp, 'equipment_links', []) or []:
+            eq = getattr(link, 'equipment', None)
+            if not eq:
+                continue
+            routines = CalibrationRoutine.query.filter_by(equipment_id=eq.id).all()
+            routine_map = {r.name: r for r in routines}
+            logs = (CalibrationLog.query
+                    .filter_by(equipment_id=eq.id)
+                    .filter(CalibrationLog.performed_at.isnot(None))
+                    .order_by(CalibrationLog.performed_at.asc())
+                    .all())
+
+            def _is_out_of_tolerance(log):
+                if not log:
+                    return False, None
+                avg = _avg_measured_for_log(log)
+                if avg is None:
+                    return False, None
+                routine = routine_map.get(log.calibration_type or 'default')
+                if not routine:
+                    return False, None
+                if routine.min_value is not None and avg < routine.min_value:
+                    return True, f"{avg:.4g} < min {routine.min_value}"
+                if routine.max_value is not None and avg > routine.max_value:
+                    return True, f"{avg:.4g} > max {routine.max_value}"
+                return False, None
+
+            start_logs = {}
+            end_logs = {}
+            after_logs = {}
+            for l in logs:
+                cal_type = l.calibration_type or 'default'
+                if l.performed_at <= start_at:
+                    start_logs[cal_type] = l
+                if l.performed_at <= end_at:
+                    end_logs[cal_type] = l
+                if l.performed_at > end_at and cal_type not in after_logs:
+                    after_logs[cal_type] = l
+
+            tol_reasons = []
+            cal_types = set(routine_map.keys()) | set(start_logs.keys()) | set(end_logs.keys()) | set(after_logs.keys())
+            for cal_type in sorted(cal_types):
+                start_log = start_logs.get(cal_type)
+                end_log = end_logs.get(cal_type)
+                next_after_end = after_logs.get(cal_type)
+
+                out, reason = _is_out_of_tolerance(start_log)
+                if out and start_log:
+                    tol_reasons.append(f"{cal_type}: Start check ({start_log.performed_at.date()}): {reason}")
+                out, reason = _is_out_of_tolerance(end_log)
+                if out and end_log:
+                    tol_reasons.append(f"{cal_type}: End check ({end_log.performed_at.date()}): {reason}")
+                out, reason = _is_out_of_tolerance(next_after_end)
+                if out and next_after_end:
+                    tol_reasons.append(f"{cal_type}: After end ({next_after_end.performed_at.date()}): {reason}")
+                if not next_after_end:
+                    tol_reasons.append(f"{cal_type}: No calibration after experiment end")
+
+            if not tol_reasons:
+                for l in logs:
+                    if l.performed_at < start_at or l.performed_at > end_at:
+                        continue
+                    out, reason = _is_out_of_tolerance(l)
+                    if out:
+                        tol_reasons.append(f"{l.calibration_type or 'default'}: During ({l.performed_at.date()}): {reason}")
+                        break
+
+            cal_reason = None
+            if getattr(eq, 'calibration_interval_days', None):
+                last_cal = (CalibrationLog.query
+                            .filter_by(equipment_id=eq.id)
+                            .filter(CalibrationLog.performed_at <= end_at)
+                            .order_by(CalibrationLog.performed_at.desc())
+                            .first())
+                if not last_cal or not last_cal.performed_at:
+                    cal_reason = 'No calibration on record'
+                else:
+                    due = last_cal.performed_at + timedelta(days=eq.calibration_interval_days)
+                    if due < start_at:
+                        cal_reason = f'Out of calibration before start ({due.date()})'
+                    elif due < end_at:
+                        cal_reason = f'Out of calibration during experiment ({due.date()})'
+
+            reasons = []
+            categories = []
+            if tol_reasons:
+                reasons.extend(tol_reasons)
+                categories.append('tolerance')
+            if cal_reason:
+                reasons.append(cal_reason)
+                categories.append('calibration')
+            if reasons:
+                flags.append({
+                    'equipment_id': eq.id,
+                    'equipment_name': eq.name,
+                    'reasons': reasons,
+                    'categories': categories,
+                })
+        return flags
+
+    # collect own + ancestor experiment links (inheritance)
+    combined_experiment_links = []
+    seen_exp_ids = set()
+    for l in getattr(sample, 'experiment_links', []) or []:
+        combined_experiment_links.append({
+            'link': l,
+            'inherited': False,
+            'source_sample': sample,
+        })
+        seen_exp_ids.add(l.experiment_id)
+    ancestor = sample.parent
+    while ancestor:
+        for l in getattr(ancestor, 'experiment_links', []) or []:
+            if l.experiment_id in seen_exp_ids:
+                continue
+            combined_experiment_links.append({
+                'link': l,
+                'inherited': True,
+                'source_sample': ancestor,
+            })
+            seen_exp_ids.add(l.experiment_id)
+        ancestor = ancestor.parent
+
+    flagged_experiments = set()
+    for item in combined_experiment_links:
+        exp = getattr(item.get('link'), 'experiment', None)
+        if not exp:
+            continue
+        flags = _experiment_equipment_flags(exp)
+        if flags:
+            flagged_experiments.add(exp.id)
+
     return render_template(
         "sample.html",
         sample=sample,
@@ -3883,10 +5132,163 @@ def view_sample(sample_id, lab_slug=None, project_id=None):
         lineage=lineage,
         family_tree=serialize_sample_tree(get_sample_root(sample), sample.id),
         attr_defs=attr_defs,
+        class_attr_defs=class_attr_defs,
+        class_attrs_inherited=class_attrs_inherited,
         needs_update=needs_update,
+        stock_material_attrs=safe_json_loads(sample.stock_material.class_attrs_json, {}) if sample.stock_material and getattr(sample.stock_material, 'class_attrs_json', None) else {},
+        sample_stock_materials=SampleStockMaterial.query.filter_by(sample_id=sample.id).all(),
         stock_materials=StockMaterial.query.filter_by(database_id=sample.project.database_id).order_by(StockMaterial.name.asc()).all(),
         current_lab=sample.project.database,
+        lab_role=lab_role,
+        sample_logs=SampleLog.query.filter_by(sample_id=sample.id).order_by(SampleLog.created_at.desc()).all(),
+        flagged_experiments=flagged_experiments,
+        combined_experiment_links=combined_experiment_links,
     )
+
+
+@app.route('/sample/<int:sample_id>/log/add', methods=['POST'])
+@app.route('/lab/<lab_slug>/sample/<int:sample_id>/log/add', methods=['POST'])
+@app.route('/lab/<lab_slug>/project/<int:project_id>/sample/<int:sample_id>/log/add', methods=['POST'])
+@login_required
+def add_sample_log(sample_id, lab_slug=None, project_id=None):
+    sample = Sample.query.get_or_404(sample_id)
+    project = sample.project
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if not project or project.database_id != lab.id:
+            abort(403)
+        if project_id and project.id != project_id:
+            abort(404)
+        set_current_lab(lab)
+    else:
+        if project and project.database:
+            lab_key = project.database.slug or str(project.database.id)
+            return redirect(url_for('add_sample_log', lab_slug=lab_key, project_id=project.id, sample_id=sample.id))
+
+    role = db_role(current_user, project.database_id) if project and project.database_id else None
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+
+    title = (request.form.get('title') or '').strip()
+    notes = (request.form.get('notes') or '').strip()
+    if not title:
+        flash('Log title is required.', 'error')
+        return redirect(url_for('view_sample', lab_slug=lab_slug, project_id=project.id, sample_id=sample.id) if lab_slug else url_for('view_sample', sample_id=sample.id))
+
+    entry = SampleLog(sample_id=sample.id, user_id=_uid(), title=title, notes=notes)
+    db.session.add(entry)
+    db.session.commit()
+    flash('Log entry added.', 'ok')
+    return redirect(url_for('view_sample', lab_slug=lab_slug, project_id=project.id, sample_id=sample.id) if lab_slug else url_for('view_sample', sample_id=sample.id))
+
+
+@app.route('/sample/<int:sample_id>/timeline')
+@app.route('/lab/<lab_slug>/sample/<int:sample_id>/timeline')
+def sample_timeline(sample_id, lab_slug=None):
+    sample = Sample.query.get_or_404(sample_id)
+    project = sample.project
+    if lab_slug:
+        lab = get_lab_or_404(lab_slug)
+        if not project or project.database_id != lab.id:
+            abort(403)
+        set_current_lab(lab)
+    else:
+        if project and project.database:
+            lab_key = project.database.slug or str(project.database.id)
+            return redirect(url_for('sample_timeline', lab_slug=lab_key, sample_id=sample.id))
+
+    root = get_sample_root(sample)
+    tree_samples = [root] + list(get_descendants(root)) if root else [sample]
+    tree_ids = [s.id for s in tree_samples]
+
+    def _sample_url(s):
+        return url_for('view_sample', lab_slug=lab.slug, project_id=project.id, sample_id=s.id) if lab_slug else url_for('view_sample', sample_id=s.id)
+
+    def _exp_url(exp):
+        return url_for('view_experiment', lab_slug=lab.slug, project_id=exp.project_id, experiment_id=exp.id) if lab_slug else url_for('view_experiment', experiment_id=exp.id)
+
+    events = []
+    linked_experiments = {}
+    for s in tree_samples:
+        if s.created_at:
+            events.append({
+                'type': 'sample_created',
+                'timestamp': s.created_at.isoformat(),
+                'title': s.name,
+                'id': s.id,
+                'url': _sample_url(s)
+            })
+
+        for d in getattr(s, 'documents', []):
+            if d.uploaded_at:
+                events.append({
+                    'type': 'document',
+                    'timestamp': d.uploaded_at.isoformat(),
+                    'title': f"{s.name}: {d.filename}",
+                    'id': d.id,
+                    'url': _sample_url(s)
+                })
+
+        for m in getattr(s, 'measurements', []):
+            if m.measured_at:
+                events.append({
+                    'type': 'measurement',
+                    'timestamp': m.measured_at.isoformat(),
+                    'title': f"{s.name}: Measurement {m.id}",
+                    'id': m.id,
+                    'url': _sample_url(s)
+                })
+
+        for l in getattr(s, 'experiment_links', []) or []:
+            exp = getattr(l, 'experiment', None)
+            if not exp or exp.id in linked_experiments:
+                continue
+            linked_experiments[exp.id] = {
+                'exp': exp,
+                'sample_name': s.name,
+            }
+
+    for log in SampleLog.query.filter(SampleLog.sample_id.in_(tree_ids)).all():
+        if log.created_at:
+            events.append({
+                'type': 'log',
+                'timestamp': log.created_at.isoformat(),
+                'title': log.title,
+                'id': log.id,
+                'url': _sample_url(next((s for s in tree_samples if s.id == log.sample_id), sample))
+            })
+
+    # experiment start/end dates relevant to this sample tree
+    for data in linked_experiments.values():
+        exp = data['exp']
+        label_suffix = f" (linked to {data['sample_name']})" if data.get('sample_name') else ''
+        if getattr(exp, 'start_at', None):
+            events.append({
+                'type': 'experiment_start',
+                'timestamp': exp.start_at.isoformat(),
+                'title': f"{exp.title}{label_suffix}",
+                'id': exp.id,
+                'url': _exp_url(exp)
+            })
+        if getattr(exp, 'end_at', None):
+            events.append({
+                'type': 'experiment_end',
+                'timestamp': exp.end_at.isoformat(),
+                'title': f"{exp.title}{label_suffix}",
+                'id': exp.id,
+                'url': _exp_url(exp)
+            })
+
+    grouped = {}
+    for ev in events:
+        ts = ev.get('timestamp') or ''
+        key = ts[:7] if ts else 'unknown'
+        grouped.setdefault(key, []).append(ev)
+
+    for k in grouped:
+        grouped[k].sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+    return jsonify(grouped)
 
 
 @app.route('/stock/<int:stock_id>')
@@ -4038,26 +5440,21 @@ def upload_stock_material_doc(stock_id, lab_slug=None):
     if not allowed_file(file.filename):
         flash('File type not allowed.', 'error')
         return redirect(url_for('view_stock_material', stock_id=mat.id))
-
-    safe_name = secure_filename(file.filename)
     folder = stock_material_upload_dir(mat.id)
-    stored_path = os.path.join(folder, safe_name)
-    base, ext = os.path.splitext(safe_name)
-    i = 1
-    while os.path.exists(stored_path):
-        safe_name = f"{base}({i}){ext}"
-        stored_path = os.path.join(folder, safe_name)
-        i += 1
-
-    file.save(stored_path)
+    stored_path, _ = save_uploaded_file(file, folder)
     doc = StockMaterialDocument(
         stock_material_id=mat.id,
         filename=file.filename,
         stored_path=stored_path,
         mimetype=file.mimetype,
+        uploaded_by_user_id=_uid(),
     )
     db.session.add(doc)
     db.session.commit()
+    try:
+        log_lab_event(mat.database, "document_uploaded", "stock_material", mat.id, file.filename, {"doc_id": doc.id})
+    except Exception:
+        pass
     flash('Document uploaded.', 'ok')
     return redirect(url_for('view_stock_material', stock_id=mat.id))
 
@@ -4065,12 +5462,31 @@ def upload_stock_material_doc(stock_id, lab_slug=None):
 @app.route('/stock/doc/<int:doc_id>/download')
 def download_stock_material_doc(doc_id):
     d = StockMaterialDocument.query.get_or_404(doc_id)
-    return send_from_directory(
-        os.path.dirname(d.stored_path),
-        os.path.basename(d.stored_path),
-        as_attachment=True,
-        download_name=d.filename,
-    )
+    return send_stored_file(d.stored_path, d.filename)
+
+
+@app.post('/stock/doc/<int:doc_id>/delete')
+@login_required
+def delete_stock_material_doc(doc_id):
+    d = StockMaterialDocument.query.get_or_404(doc_id)
+    mat = d.stock_material
+    role = db_role(current_user, mat.database_id) if mat.database_id else None
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+    try:
+        if d.stored_path and os.path.exists(d.stored_path):
+            os.remove(d.stored_path)
+    except Exception:
+        pass
+    filename = d.filename
+    db.session.delete(d)
+    db.session.commit()
+    try:
+        log_lab_event(mat.database, "document_deleted", "stock_material", mat.id, filename, {"doc_id": doc_id})
+    except Exception:
+        pass
+    flash('Document deleted.', 'ok')
+    return redirect(url_for('view_stock_material', stock_id=mat.id))
 
 
 @app.context_processor
@@ -4116,58 +5532,6 @@ def link_experiment(sample_id):
     return redirect(url_for("view_sample", sample_id=sample.id))
 
 
-@app.post("/experiment/<int:experiment_id>/link/parent")
-def link_existing_parent(experiment_id):
-    current = Experiment.query.get_or_404(experiment_id)
-    parent_id = request.form.get("parent_id", type=int)
-    if not parent_id:
-        flash("Select a parent experiment.", "error")
-        return redirect(url_for("view_experiment", experiment_id=current.id))
-
-    parent = Experiment.query.get_or_404(parent_id)
-
-    # Same project?
-    if parent.project_id != current.project_id:
-        flash("Parent must be in the same project.", "error")
-        return redirect(url_for("view_experiment", experiment_id=current.id))
-
-    # Cycle protection
-    if would_create_cycle_as_parent(current, parent):
-        flash("That link would create a cycle.", "error")
-        return redirect(url_for("view_experiment", experiment_id=current.id))
-
-    current.parent = parent  # reparent if it already had a parent
-    db.session.commit()
-    flash("Parent linked.", "ok")
-    return redirect(url_for("view_experiment", experiment_id=current.id))
-
-
-@app.post("/experiment/<int:experiment_id>/link/child")
-def link_existing_child(experiment_id):
-    current = Experiment.query.get_or_404(experiment_id)
-    child_id = request.form.get("child_id", type=int)
-    if not child_id:
-        flash("Select a child experiment.", "error")
-        return redirect(url_for("view_experiment", experiment_id=current.id))
-
-    child = Experiment.query.get_or_404(child_id)
-
-    # Same project?
-    if child.project_id != current.project_id:
-        flash("Child must be in the same project.", "error")
-        return redirect(url_for("view_experiment", experiment_id=current.id))
-
-    # Cycle protection
-    if would_create_cycle_as_child(current, child):
-        flash("That link would create a cycle.", "error")
-        return redirect(url_for("view_experiment", experiment_id=current.id))
-
-    child.parent = current  # reparent if it already had a parent
-    db.session.commit()
-    flash("Child linked.", "ok")
-    return redirect(url_for("view_experiment", experiment_id=current.id))
-
-
 @app.route("/sample/link/<int:link_id>/delete", methods=["POST"])
 def unlink_experiment(link_id):
     link = SampleExperiment.query.get_or_404(link_id)
@@ -4176,78 +5540,6 @@ def unlink_experiment(link_id):
     db.session.commit()
     flash("Link removed.", "ok")
     return redirect(url_for("view_sample", sample_id=sid))
-
-
-@app.post("/experiment/<int:experiment_id>/unlink/parent")
-def unlink_parent_experiment(experiment_id):
-    current = Experiment.query.get_or_404(experiment_id)
-    if not current.parent_id:
-        flash("No parent to unlink.", "error")
-        return redirect(url_for("view_experiment", experiment_id=current.id))
-    current.parent = None
-    db.session.commit()
-    flash("Parent unlinked.", "ok")
-    return redirect(url_for("view_experiment", experiment_id=current.id))
-
-
-@app.post("/experiment/<int:experiment_id>/unlink/child/<int:child_id>")
-def unlink_child_experiment(experiment_id, child_id):
-    current = Experiment.query.get_or_404(experiment_id)
-    child = Experiment.query.get_or_404(child_id)
-    if child.parent_id != current.id:
-        flash("That experiment is not a direct child of this one.", "error")
-        return redirect(url_for("view_experiment", experiment_id=current.id))
-    child.parent = None
-    db.session.commit()
-    flash("Child unlinked.", "ok")
-    return redirect(url_for("view_experiment", experiment_id=current.id))
-
-
-@app.post("/experiment/<int:experiment_id>/create/parent")
-def create_parent_experiment(experiment_id):
-    current = Experiment.query.get_or_404(experiment_id)
-    title = (request.form.get("title") or "").strip()
-    details = (request.form.get("details") or "").strip()
-    if not title:
-        flash("Title is required for the new parent.", "error")
-        return redirect(url_for("view_experiment", experiment_id=current.id))
-
-    parent = Experiment(
-        project_id=current.project_id,
-        title=title,
-        description=details,
-        creator_id=_uid()
-    )
-    db.session.add(parent)
-    db.session.flush()  # get parent.id without full commit
-
-    # No cycle possible here (parent is new), just link
-    current.parent = parent
-    db.session.commit()
-    flash("Parent experiment created and linked.", "ok")
-    return redirect(url_for("view_experiment", experiment_id=current.id))
-
-
-@app.post("/experiment/<int:experiment_id>/create/child")
-def create_child_experiment(experiment_id):
-    current = Experiment.query.get_or_404(experiment_id)
-    title = (request.form.get("title") or "").strip()
-    details = (request.form.get("details") or "").strip()
-    if not title:
-        flash("Title is required for the new child.", "error")
-        return redirect(url_for("view_experiment", experiment_id=current.id))
-
-    child = Experiment(
-        project_id=current.project_id,
-        title=title,
-        description=details,
-        parent=current,
-        creator_id=_uid()
-    )
-    db.session.add(child)
-    db.session.commit()
-    flash("Child experiment created and linked.", "ok")
-    return redirect(url_for("view_experiment", experiment_id=current.id))
 
 
 @app.route("/sample/<int:sample_id>/upload", methods=["POST"])
@@ -4260,24 +5552,22 @@ def upload_sample_doc(sample_id):
     if not allowed_file(file.filename):
         flash("File type not allowed.", "error")
         return redirect(url_for("view_sample", sample_id=sample.id))
-
-    safe_name = secure_filename(file.filename)
     folder = sample_upload_dir(sample.id)
-    stored_path = os.path.join(folder, safe_name)
-
-    base, ext = os.path.splitext(safe_name)
-    i = 1
-    while os.path.exists(stored_path):
-        safe_name = f"{base}({i}){ext}"
-        stored_path = os.path.join(folder, safe_name)
-        i += 1
-
-    file.save(stored_path)
+    stored_path, _ = save_uploaded_file(file, folder)
     doc = SampleDocument(
-        sample_id=sample.id, filename=file.filename, stored_path=stored_path, mimetype=file.mimetype
+        sample_id=sample.id, filename=file.filename, stored_path=stored_path, mimetype=file.mimetype, uploaded_by_user_id=_uid()
     )
     db.session.add(doc)
     db.session.commit()
+    try:
+        log_lab_event(sample.project.database, "document_uploaded", "sample", sample.id, file.filename, {"doc_id": doc.id})
+    except Exception:
+        pass
+    try:
+        db.session.add(SampleLog(sample_id=sample.id, user_id=_uid(), title=f"Document uploaded: {file.filename}"))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
     flash("Document uploaded.", "ok")
     return redirect(url_for("view_sample", sample_id=sample.id))
 
@@ -4285,12 +5575,37 @@ def upload_sample_doc(sample_id):
 @app.route("/sample/doc/<int:doc_id>/download")
 def download_sample_doc(doc_id):
     d = SampleDocument.query.get_or_404(doc_id)
-    return send_from_directory(
-        os.path.dirname(d.stored_path),
-        os.path.basename(d.stored_path),
-        as_attachment=True,
-        download_name=d.filename,
-    )
+    return send_stored_file(d.stored_path, d.filename)
+
+
+@app.post("/sample/doc/<int:doc_id>/delete")
+@login_required
+def delete_sample_doc(doc_id):
+    d = SampleDocument.query.get_or_404(doc_id)
+    sample = d.sample
+    project = sample.project if sample else None
+    role = db_role(current_user, project.database_id) if project and project.database_id else None
+    if role not in ('owner', 'admin', 'editor'):
+        abort(403)
+    try:
+        if d.stored_path and os.path.exists(d.stored_path):
+            os.remove(d.stored_path)
+    except Exception:
+        pass
+    filename = d.filename
+    db.session.delete(d)
+    db.session.commit()
+    try:
+        log_lab_event(project.database, "document_deleted", "sample", sample.id, filename, {"doc_id": doc_id})
+    except Exception:
+        pass
+    try:
+        db.session.add(SampleLog(sample_id=sample.id, user_id=_uid(), title=f"Document deleted: {filename}"))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    flash("Document deleted.", "ok")
+    return redirect(url_for("view_sample", sample_id=sample.id))
 
 
 @app.route("/sample/<int:sample_id>/edit", methods=["POST"])
@@ -4321,6 +5636,48 @@ def edit_sample(sample_id):
                         c.stock_material_id = None
                         cascade_clear(c)
                 cascade_clear(sample)
+
+    # Sample class attributes (editable only when not inherited)
+    class_attrs_inherited = False
+    if sample.parent_id:
+        class_attrs_inherited = True
+    elif sample.stock_material and getattr(sample.stock_material, 'class_attrs_json', None):
+        class_attrs_inherited = True
+
+    sc = getattr(sample, 'sample_class', None)
+    psc = getattr(sample, 'project_class', None)
+    class_defs = []
+    if sc and getattr(sc, 'attributes_json', None):
+        base_attrs = safe_json_loads(sc.attributes_json, [])
+        if psc and getattr(psc, 'attributes_override_json', None):
+            override = safe_json_loads(psc.attributes_override_json, [])
+            merged = []
+            names = {a.get('name'): a for a in override if isinstance(a, dict)}
+            for a in base_attrs:
+                if isinstance(a, dict) and a.get('name') in names:
+                    merged.append(names.pop(a.get('name')))
+                else:
+                    merged.append(a)
+            merged.extend(names.values())
+        else:
+            merged = base_attrs
+        class_defs = [a for a in merged if isinstance(a, dict) and a.get('name')]
+
+    class_missing = []
+    if class_defs and not class_attrs_inherited:
+        class_values = {}
+        for a in class_defs:
+            aname = a.get('name')
+            slug = re.sub('[^0-9a-z]+', '_', (aname or '').lower())
+            key = f"sc_{slug}"
+            val = (request.form.get(key) or "").strip()
+            if a.get('required') and not val:
+                class_missing.append(aname)
+            class_values[aname] = val
+        if class_missing:
+            flash("Missing required class attributes: " + ", ".join(class_missing), "error")
+            return redirect(url_for("view_sample", sample_id=sample.id))
+        sample.class_attrs_json = json.dumps(class_values) if class_values else None
 
     attrs = get_project_attrs(sample.project_id)
     existing = {v.attribute_id: v for v in sample.attribute_values}
@@ -4395,11 +5752,12 @@ def stock_qr(stock_id):
 @login_required
 def equipment_qr(equipment_id):
     eq = Equipment.query.get_or_404(equipment_id)
-    if eq.database:
-        lab_key = eq.database.slug or str(eq.database.id)
-        url = url_for("list_equipment_for_lab", lab_slug=lab_key, _external=True)
+    eq_lab = eq.database or (eq.project.database if eq.project else None)
+    if eq_lab:
+        lab_key = eq_lab.slug or str(eq_lab.id)
+        url = url_for("view_equipment", lab_slug=lab_key, equipment_id=eq.id, _external=True)
     else:
-        url = url_for("list_equipment", _external=True)
+        url = url_for("view_equipment", equipment_id=eq.id, _external=True)
     img = qrcode.make(url)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -4452,6 +5810,12 @@ with app.app_context():
     add_column_if_missing("sample", "stock_material_id", "stock_material_id INTEGER")
     # Equipment project scoping
     add_column_if_missing("equipment", "project_id", "project_id INTEGER")
+
+    # Calibration logs type
+    add_column_if_missing("calibration_log", "calibration_type", "calibration_type TEXT")
+
+    # Calibration routine standard
+    add_column_if_missing("calibration_routine", "standard", "standard TEXT")
     # Stock material sample class linking
     add_column_if_missing("stock_material", "sample_class_id", "sample_class_id INTEGER")
     add_column_if_missing("stock_material", "original_quantity", "original_quantity FLOAT")

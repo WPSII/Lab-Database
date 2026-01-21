@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import documents_card %}
 {% block content %}
 
 <div class="mb-3">
@@ -106,30 +107,18 @@
   </div>
 {% endif %}
 
-<div class="card card-body mb-3">
-  <h5 class="mb-2">Documents</h5>
-  {% if mat.documents and mat.documents|length %}
-    <ul class="list-group mb-3">
-      {% for d in mat.documents %}
-        <li class="list-group-item d-flex justify-content-between align-items-center">
-          <a href="{{ url_for('download_stock_material_doc', doc_id=d.id) }}">{{ d.filename }}</a>
-          <small class="text-muted">{{ d.uploaded_at.strftime('%Y-%m-%d') if d.uploaded_at else '' }}</small>
-        </li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <p class="text-muted">No documents yet.</p>
-  {% endif %}
-
-  {% if lab_role in ['owner','admin','editor'] %}
-    <form method="post" action="{{ url_for('upload_stock_material_doc', lab_slug=(current_lab.slug or current_lab.id), stock_id=mat.id) }}" enctype="multipart/form-data">
-      <div class="input-group">
-        <input type="file" class="form-control" name="file" required>
-        <button class="btn btn-primary">Upload</button>
-      </div>
-    </form>
-  {% endif %}
-</div>
+{{ documents_card(
+  'Documents',
+  mat.documents,
+  'download_stock_material_doc',
+  'upload_stock_material_doc',
+  {'lab_slug': (current_lab.slug or current_lab.id), 'stock_id': mat.id},
+  show_upload=(lab_role in ['owner','admin','editor']),
+  empty_text='No documents yet.',
+  show_date=True,
+  show_delete=(lab_role in ['owner','admin','editor']),
+  delete_endpoint='delete_stock_material_doc'
+) }}
 
 <div class="card card-body mb-3">
   <h5 class="mb-2">Quantity Log</h5>

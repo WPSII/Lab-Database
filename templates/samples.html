@@ -182,6 +182,12 @@
               <div class="form-text">Sample Class is inherited from the selected stock material. For child samples this is inherited from the root and cannot be changed.</div>
               <div class="small text-muted mt-1" id="stock-class-label"></div>
             </div>
+            <div class="col-md-12" id="stock-material-extra-wrap" style="display:none;">
+              <label class="form-label">Additional Stock Materials (mixture)</label>
+              <div id="stock-material-extra-rows"></div>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="stock-material-add-extra">+ Add material</button>
+              <div class="form-text">Add one or more additional materials and specify quantity used for each.</div>
+            </div>
             <div class="col-md-6" id="sample-qty-wrap" style="display:none;">
               <label class="form-label">Sample Quantity</label>
               <div class="input-group">
@@ -409,6 +415,9 @@
 
   // Stock material populate
   const stockSel = document.getElementById('stock-material-select');
+  const extraWrap = document.getElementById('stock-material-extra-wrap');
+  const extraRows = document.getElementById('stock-material-extra-rows');
+  const addExtraBtn = document.getElementById('stock-material-add-extra');
   const stockClassLabel = document.getElementById('stock-class-label');
   const stockDataEl = document.getElementById('stock-material-data');
   let stockData = [];
@@ -419,6 +428,78 @@
     stockData.forEach(sm => {
       const opt = document.createElement('option'); opt.value = sm.id; opt.textContent = sm.name + (sm.lot_number?(' — ' + sm.lot_number):''); stockSel.appendChild(opt);
     });
+  }
+
+  function updateExtraRow(row){
+    const sel = row.querySelector('select');
+    const qty = row.querySelector('input[name="stock_use_qty_extra"]');
+    const oldQty = row.querySelector('.extra-old-qty');
+    const newQty = row.querySelector('.extra-new-qty');
+    const unitEls = row.querySelectorAll('.extra-unit');
+    const stock = stockData.find(s => s.id === Number(sel.value || 0));
+    const oldVal = (stock && stock.quantity !== null && stock.quantity !== undefined) ? stock.quantity : '';
+    const unit = stock && stock.unit ? stock.unit : '';
+    if (oldQty) oldQty.value = oldVal;
+    unitEls.forEach(u => u.textContent = unit);
+    if (newQty) {
+      const q = parseFloat(qty.value);
+      if (oldVal !== '' && !Number.isNaN(q)) {
+        newQty.value = (Number(oldVal) - q);
+      } else {
+        newQty.value = '';
+      }
+    }
+  }
+
+  function makeExtraRow(){
+    const row = document.createElement('div');
+    row.className = 'border rounded p-2 mb-2';
+    row.innerHTML = `
+      <div class="d-flex gap-2 align-items-end flex-wrap">
+        <div class="flex-grow-1" style="min-width: 220px;">
+          <label class="form-label">Stock Material</label>
+          <select class="form-select" name="stock_material_id_extra"></select>
+        </div>
+        <div style="min-width: 160px;">
+          <label class="form-label">Qty Used</label>
+          <div class="input-group">
+            <input class="form-control" name="stock_use_qty_extra" type="number" step="any" min="0">
+            <span class="input-group-text extra-unit"></span>
+          </div>
+        </div>
+        <div style="min-width: 160px;">
+          <label class="form-label">Old Qty</label>
+          <div class="input-group">
+            <input class="form-control extra-old-qty" type="number" step="any" readonly>
+            <span class="input-group-text extra-unit"></span>
+          </div>
+        </div>
+        <div style="min-width: 160px;">
+          <label class="form-label">New Qty</label>
+          <div class="input-group">
+            <input class="form-control extra-new-qty" type="number" step="any" readonly>
+            <span class="input-group-text extra-unit"></span>
+          </div>
+        </div>
+        <div>
+          <button type="button" class="btn btn-sm btn-outline-danger mt-3">Remove</button>
+        </div>
+      </div>
+    `;
+    const sel = row.querySelector('select');
+    const ph = document.createElement('option'); ph.value=''; ph.textContent='Select a stock material…'; sel.appendChild(ph);
+    stockData.forEach(sm => {
+      const opt = document.createElement('option'); opt.value = sm.id; opt.textContent = sm.name + (sm.lot_number?(' — ' + sm.lot_number):''); sel.appendChild(opt);
+    });
+    sel.addEventListener('change', () => updateExtraRow(row));
+    const qty = row.querySelector('input[name="stock_use_qty_extra"]');
+    qty.addEventListener('input', () => updateExtraRow(row));
+    row.querySelector('button').addEventListener('click', () => row.remove());
+    return row;
+  }
+
+  function resetExtraRows(){
+    if (extraRows) extraRows.innerHTML = '';
   }
 
   function canCreate(){
@@ -487,6 +568,7 @@
   function syncStockOrigin(){
     const wantsStock = fromStockYes && fromStockYes.checked;
     if (stockWrap) stockWrap.style.display = wantsStock ? '' : 'none';
+    if (extraWrap) extraWrap.style.display = wantsStock ? '' : 'none';
     if (sampleQtyWrap) sampleQtyWrap.style.display = wantsStock ? '' : 'none';
     if (stockOldQtyWrap) stockOldQtyWrap.style.display = wantsStock ? '' : 'none';
     if (stockQtyWrap) stockQtyWrap.style.display = wantsStock ? '' : 'none';
@@ -508,6 +590,7 @@
       if (stockOldQtyUnit) stockOldQtyUnit.textContent = '';
       if (stockQtyUnit) stockQtyUnit.textContent = '';
       if (sampleQtyUnit) sampleQtyUnit.textContent = '';
+      resetExtraRows();
       renderScAttrs(null);
     }
     toggleCreate();
@@ -611,6 +694,8 @@
       }
       // disable stock selection for child samples
       stockSel.disabled = true;
+      if (extraWrap) extraWrap.style.display = 'none';
+      resetExtraRows();
       updateStockClassAttrs();
       toggleCreate();
       fetch(`${apiBase}/api/sample/${parentId}/attr-values`).then(r=>r.json()).then(map=>{
@@ -644,6 +729,7 @@
       });
       // re-enable stock selection for root sample creation
       stockSel.disabled = false;
+      if (extraWrap) extraWrap.style.display = (fromStockYes && fromStockYes.checked) ? '' : 'none';
       updateStockClassAttrs();
       toggleCreate();
     }
@@ -653,6 +739,13 @@
     updateStockClassAttrs();
     toggleCreate();
   });
+
+  if (addExtraBtn){
+    addExtraBtn.addEventListener('click', () => {
+      if (!extraRows) return;
+      extraRows.appendChild(makeExtraRow());
+    });
+  }
 
   if (fromStockYes && fromStockNo){
     fromStockYes.addEventListener('change', syncStockOrigin);

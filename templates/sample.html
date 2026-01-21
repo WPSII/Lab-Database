@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import documents_card, card %}
 {% block content %}
 
 <p class="mb-3">
@@ -31,203 +32,315 @@
          style="max-width:200px;">
     <div class="form-text text-center">Scan to open this sample.</div>
   </div>
-
 </div>
-
-{% if sample.stock_material %}
-  <div class="card card-body mb-3">
-    <h6 class="mb-1">Stock Material</h6>
-    <div>
-      <a href="{{ url_for('view_stock_material', stock_id=sample.stock_material.id) }}">{{ sample.stock_material.name }}</a>
-      {% if sample.stock_material.lot_number %} · <span class="text-muted">Lot {{ sample.stock_material.lot_number }}</span>{% endif %}
-    </div>
-  </div>
-{% endif %}
 
 {% if needs_update and needs_update > 0 %}
   <div class="alert alert-warning d-flex align-items-center" role="alert">
     <div>
       This sample has <strong>{{ needs_update }}</strong> attribute{{ 's' if needs_update != 1 else '' }} needing update.
-      Use the <a href="#edit-sample">Edit Sample</a> form below.
+      Use the <a href="#editAttrs-{{ sample.id }}" data-bs-toggle="collapse">Edit attributes</a> form below.
     </div>
   </div>
 {% endif %}
 
-<!-- Family tree -->
-<div class="card card-body mb-3">
-  <h5 class="mb-2">Sample Family Tree</h5>
-
-  {% if lineage and lineage|length %}
-    <div class="small text-muted mb-2">
-      Path:
-      {% for n in lineage %}
-        {% if n.id == sample.id %}
-          <strong>{{ n.name }}</strong>
-        {% else %}
-          <a href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=sample.project.id, sample_id=n.id) }}">{{ n.name }}</a>
-        {% endif %}
-        {% if not loop.last %} &raquo; {% endif %}
-      {% endfor %}
-    </div>
-  {% endif %}
-
-  {% macro render_sample_node(n) -%}
-    <li class="mb-1">
-      {% if n.is_current %}
-        <strong><a href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=sample.project.id, sample_id=n.id) }}">{{ n.name }}</a></strong>
-        <span class="badge bg-primary ms-2">current</span>
-      {% else %}
-        <a href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=sample.project.id, sample_id=n.id) }}">{{ n.name }}</a>
-      {% endif %}
-
-      {% if n.children and n.children|length %}
-        <ul class="mt-1">
-          {% for c in n.children %}
-            {{ render_sample_node(c) }}
-          {% endfor %}
-        </ul>
-      {% endif %}
-    </li>
-  {%- endmacro %}
-
-  {% if family_tree %}
-    <ul class="mb-0">
-      {{ render_sample_node(family_tree) }}
-    </ul>
-  {% else %}
-    <div class="text-muted">No family data.</div>
-  {% endif %}
-</div>
-
 <div class="row g-3">
   <div class="col-lg-6">
 
-    <!-- Attributes (display) -->
-    <div class="card card-body mb-3">
-      <h5 class="mb-2">Attributes (Project-defined)</h5>
-      <dl class="row mb-0">
-        {% if attr_defs and attr_defs|length %}
-          {% for a in attr_defs %}
-            <dt class="col-5">
-              {{ a.name }}
-              {% if a.unit %}
-                <span class="text-muted">({{ a.unit }})</span>
-              {% endif %}
-              {% if a.required %}<span class="text-danger" title="required">*</span>{% endif %}
-            </dt>
-            <dd class="col-7">
-              {% if a.value %}
-                {{ a.value }}{% if a.unit %} {{ a.unit }}{% endif %}
-              {% else %}
-                <span class="text-muted">—</span>
-              {% endif %}
-              {% if a.is_placeholder %}
-                <span class="badge bg-warning text-dark ms-2">needs update</span>
-              {% endif %}
-            </dd>
-          {% endfor %}
-        {% else %}
-          <dt class="col-12 text-muted">No attributes defined for this project.</dt>
-        {% endif %}
-      </dl>
-    </div>
-
-    <!-- Edit Sample -->
     <div class="card card-body mb-3" id="edit-sample">
-      <h5 class="mb-2">Edit Sample</h5>
-      <form method="post" action="{{ url_for('edit_sample', sample_id=sample.id) }}">
-        <div class="mb-2">
-          <label class="form-label">Sample Name</label>
-          <input class="form-control" name="name" value="{{ sample.name }}" required>
-        </div>
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Attributes</h5>
+        <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#editAttrs-{{ sample.id }}">Edit attributes</button>
+      </div>
 
-        {% if not sample.parent %}
-          <div class="mb-3">
-            <label class="form-label">Stock Material (lab inventory)</label>
-            <select class="form-select" name="stock_material_id">
-              <option value="">(none)</option>
-              {% for m in stock_materials %}
-                <option value="{{ m.id }}" {% if sample.stock_material and sample.stock_material.id == m.id %}selected{% endif %}>{{ m.name }}{% if m.lot_number %} — {{ m.lot_number }}{% endif %}</option>
-              {% endfor %}
-            </select>
-            <div class="form-text">Only the root sample may change the stock material; changes will cascade to descendants.</div>
-          </div>
-        {% endif %}
-
-        {% if attr_defs and attr_defs|length %}
-          <h6 class="mt-2">Attributes</h6>
-          {% for a in attr_defs %}
-            <div class="mb-2">
-              <label class="form-label">
-                {{ a.name }}
-                {% if a.unit %}<span class="text-muted">({{ a.unit }})</span>{% endif %}
-                {% if a.required %} *{% endif %}
-                {% if a.is_placeholder %}
-                  <span class="badge bg-warning text-dark ms-2">needs update</span>
-                {% endif %}
-              </label>
-
-              {% if a.field_type == "select" %}
-                <select class="form-select" name="attr_{{ a.id }}" {% if a.required %}required{% endif %} {% if sample.parent and a.inherited %}disabled{% endif %}>
-                  {% if not a.required %}
-                    <option value="">(optional)</option>
-                  {% endif %}
-                  {% for choice in a.choices %}
-                    <option value="{{ choice }}" {% if a.value == choice %}selected{% endif %}>{{ choice }}</option>
-                  {% endfor %}
-                </select>
-              {% else %}
-                <input
-                  class="form-control"
-                  name="attr_{{ a.id }}"
-                  {% if a.field_type == "number" %}type="number" step="any" max="1000000000"
-                  {% elif a.field_type == "date" %}type="date"
-                  {% else %}type="text"{% endif %}
-                  value="{{ a.value or '' }}"
-                  {% if a.field_type != "number" and a.field_type != "date" %}maxlength="200"{% endif %}
-                  {% if not a.required %}placeholder="(optional){% if a.unit %} — {{ a.unit }}{% endif %}"{% endif %}
-                  {% if a.required %}required{% endif %}
-                  {% if sample.parent and a.inherited %}disabled{% endif %}
-                >
-              {% endif %}
-            </div>
-          {% endfor %}
-        {% else %}
-          <div class="alert alert-info">No attributes defined for this project.</div>
-        {% endif %}
-
-        <div class="mt-3">
-          <button class="btn btn-primary">Save Changes</button>
-        </div>
-      </form>
-    </div>
-
-    <!-- Documents -->
-    <div class="card card-body mb-3">
-      <h5 class="mb-2">Documents</h5>
-      <ul class="list-group mb-3">
-        {% for d in sample.documents %}
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <span>{{ d.filename }}</span>
-            <a class="btn btn-sm btn-outline-secondary"
-               href="{{ url_for('download_sample_doc', doc_id=d.id) }}">Download</a>
+      <div class="mb-3">
+        <ul class="list-unstyled mb-0">
+          <li><strong>Name:</strong> {{ sample.name }}</li>
+          <li><strong>Sample Class:</strong> {{ sample.sample_class.name if sample.sample_class else '-' }}</li>
+          <li>
+            <strong>Stock Material:</strong> {% if sample.stock_material %}{{ sample.stock_material.name }}{% if sample.stock_material.lot_number %} - Lot {{ sample.stock_material.lot_number }}{% endif %}{% else %}-{% endif %}
+            {% if stock_material_attrs and stock_material_attrs|length %}
+              <ul class="mt-1 mb-0 ps-3 small text-muted">
+                {% for k, v in stock_material_attrs.items() %}
+                  <li>{{ k }}: {{ v or '-' }}</li>
+                {% endfor %}
+              </ul>
+            {% endif %}
           </li>
-        {% else %}
-          <li class="list-group-item">No documents uploaded.</li>
-        {% endfor %}
-      </ul>
-      <form method="post" action="{{ url_for('upload_sample_doc', sample_id=sample.id) }}" enctype="multipart/form-data">
-        <div class="input-group">
-          <input type="file" class="form-control" name="file" required>
-          <button class="btn btn-primary">Upload</button>
+        </ul>
+      </div>
+
+      {% if class_attr_defs and class_attr_defs|length %}
+        <div class="mb-2">
+          <div class="fw-semibold">Sample Class Attributes</div>
+          <ul class="mb-0">
+            {% for a in class_attr_defs %}
+              <li>
+                {{ a.name }}{% if a.unit %} ({{ a.unit }}){% endif %}: {{ a.value or '-' }}
+                {% if class_attrs_inherited %}<span class="badge bg-secondary ms-2">inherited</span>{% endif %}
+              </li>
+            {% endfor %}
+          </ul>
         </div>
-      </form>
+      {% endif %}
+
+      {% if attr_defs and attr_defs|length %}
+        <div>
+          <div class="fw-semibold">Project Attributes</div>
+          <ul class="mb-0">
+            {% for a in attr_defs %}
+              <li>
+                {{ a.name }}{% if a.unit %} ({{ a.unit }}){% endif %}: {{ a.value or '-' }}
+                {% if a.is_placeholder %}<span class="badge bg-warning text-dark ms-2">needs update</span>{% endif %}
+                {% if sample.parent and a.inherited %}<span class="badge bg-secondary ms-2">inherited</span>{% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+
+      <div class="collapse mt-3" id="editAttrs-{{ sample.id }}">
+        <form method="post" action="{{ url_for('edit_sample', sample_id=sample.id) }}">
+          <div class="mb-2">
+            <label class="form-label">Sample Name</label>
+            <input class="form-control" name="name" value="{{ sample.name }}" required>
+          </div>
+
+          {% if not sample.parent %}
+            <div class="mb-3">
+              <label class="form-label">Stock Material (lab inventory)</label>
+              <select class="form-select" name="stock_material_id">
+                <option value="">(none)</option>
+                {% for m in stock_materials %}
+                  <option value="{{ m.id }}" {% if sample.stock_material and sample.stock_material.id == m.id %}selected{% endif %}>{{ m.name }}{% if m.lot_number %} - {{ m.lot_number }}{% endif %}</option>
+                {% endfor %}
+              </select>
+              <div class="form-text">Only the root sample may change the stock material; changes will cascade to descendants.</div>
+            </div>
+          {% endif %}
+
+          {% if class_attr_defs and class_attr_defs|length %}
+            <h6 class="mt-2">Sample Class Attributes</h6>
+            {% for a in class_attr_defs %}
+              <div class="mb-2">
+                <label class="form-label">
+                  {{ a.name }}
+                  {% if a.unit %}<span class="text-muted">({{ a.unit }})</span>{% endif %}
+                  {% if a.required %} *{% endif %}
+                  {% if class_attrs_inherited %}
+                    <span class="badge bg-secondary ms-2">inherited</span>
+                  {% endif %}
+                </label>
+
+                {% if a.field_type == "select" %}
+                  <select class="form-select" name="{{ a.form_key }}" {% if a.required and not class_attrs_inherited %}required{% endif %} {% if class_attrs_inherited %}disabled{% endif %}>
+                    {% if not a.required %}
+                      <option value="">(optional)</option>
+                    {% endif %}
+                    {% for choice in a.choices %}
+                      <option value="{{ choice }}" {% if a.value == choice %}selected{% endif %}>{{ choice }}</option>
+                    {% endfor %}
+                  </select>
+                {% else %}
+                  <input
+                    class="form-control"
+                    name="{{ a.form_key }}"
+                    {% if a.field_type == "number" %}type="number" step="any" max="1000000000"
+                    {% elif a.field_type == "date" %}type="date"
+                    {% else %}type="text"{% endif %}
+                    value="{{ a.value or '' }}"
+                    {% if a.field_type != "number" and a.field_type != "date" %}maxlength="200"{% endif %}
+                    {% if not a.required %}placeholder="(optional){% if a.unit %} - {{ a.unit }}{% endif %}"{% endif %}
+                    {% if a.required and not class_attrs_inherited %}required{% endif %}
+                    {% if class_attrs_inherited %}disabled{% endif %}
+                  >
+                {% endif %}
+              </div>
+            {% endfor %}
+          {% endif %}
+
+          {% if attr_defs and attr_defs|length %}
+            <h6 class="mt-3">Project Attributes</h6>
+            {% for a in attr_defs %}
+              <div class="mb-2">
+                <label class="form-label">
+                  {{ a.name }}
+                  {% if a.unit %}<span class="text-muted">({{ a.unit }})</span>{% endif %}
+                  {% if a.required %} *{% endif %}
+                  {% if a.is_placeholder %}
+                    <span class="badge bg-warning text-dark ms-2">needs update</span>
+                  {% endif %}
+                  {% if sample.parent and a.inherited %}
+                    <span class="badge bg-secondary ms-2">inherited</span>
+                  {% endif %}
+                </label>
+
+                {% if a.field_type == "select" %}
+                  <select class="form-select" name="attr_{{ a.id }}" {% if a.required %}required{% endif %} {% if sample.parent and a.inherited %}disabled{% endif %}>
+                    {% if not a.required %}
+                      <option value="">(optional)</option>
+                    {% endif %}
+                    {% for choice in a.choices %}
+                      <option value="{{ choice }}" {% if a.value == choice %}selected{% endif %}>{{ choice }}</option>
+                    {% endfor %}
+                  </select>
+                {% else %}
+                  <input
+                    class="form-control"
+                    name="attr_{{ a.id }}"
+                    {% if a.field_type == "number" %}type="number" step="any" max="1000000000"
+                    {% elif a.field_type == "date" %}type="date"
+                    {% else %}type="text"{% endif %}
+                    value="{{ a.value or '' }}"
+                    {% if a.field_type != "number" and a.field_type != "date" %}maxlength="200"{% endif %}
+                    {% if not a.required %}placeholder="(optional){% if a.unit %} - {{ a.unit }}{% endif %}"{% endif %}
+                    {% if a.required %}required{% endif %}
+                    {% if sample.parent and a.inherited %}disabled{% endif %}
+                  >
+                {% endif %}
+              </div>
+            {% endfor %}
+          {% endif %}
+
+          <button class="btn btn-primary">Save</button>
+        </form>
+      </div>
     </div>
+
+    {% call card('Sample Tree') %}
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <div class="fw-semibold">Lineage</div>
+        {% if lab_role in ['owner','admin','editor'] %}
+          <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#splitSampleForm-{{ sample.id }}">Split Sample</button>
+        {% endif %}
+      </div>
+
+      {% macro render_sample_tree(node) -%}
+        <li class="mb-1">
+          <a href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=sample.project.id, sample_id=node.id) }}">{{ node.name }}</a>
+          {% if node.is_current %}<span class="badge bg-primary ms-2">current</span>{% endif %}
+          {% if node.children and node.children|length %}
+            <ul class="mt-1">
+              {% for c in node.children %}
+                {{ render_sample_tree(c) }}
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </li>
+      {%- endmacro %}
+
+      {% if family_tree %}
+        <ul class="mb-2">
+          {{ render_sample_tree(family_tree) }}
+        </ul>
+      {% else %}
+        <div class="text-muted mb-2">No sample lineage available.</div>
+      {% endif %}
+
+      {% if lab_role in ['owner','admin','editor'] %}
+        <div class="collapse mt-2" id="splitSampleForm-{{ sample.id }}">
+          <form method="post" action="{{ url_for('split_sample', sample_id=sample.id) }}">
+            <div class="mb-2">
+              <label class="form-label">Child Name</label>
+              <input class="form-control" name="name" required placeholder="e.g., {{ sample.name }} - cut B">
+            </div>
+
+            {% if attr_defs and attr_defs|length %}
+              <h6 class="mt-2">Attributes (required by project)</h6>
+              {% for a in attr_defs %}
+                <div class="mb-2">
+                  <label class="form-label">
+                    {{ a.name }}
+                    {% if a.unit %}<span class="text-muted">({{ a.unit }})</span>{% endif %}
+                    {% if a.required %} *{% endif %}
+                  </label>
+
+                  {% if a.field_type == "select" %}
+                    <select class="form-select" name="attr_{{ a.id }}" {% if a.required %}required{% endif %} {% if a.inherited %}disabled{% endif %}>
+                      {% if not a.required %}
+                        <option value="">(optional)</option>
+                      {% endif %}
+                      {% for choice in a.choices %}
+                        <option value="{{ choice }}" {% if a.value == choice %}selected{% endif %}>{{ choice }}</option>
+                      {% endfor %}
+                    </select>
+                  {% else %}
+                    <input
+                      class="form-control"
+                      name="attr_{{ a.id }}"
+                      {% if a.field_type == "number" %}type="number" step="any" max="1000000000"
+                      {% elif a.field_type == "date" %}type="date"
+                      {% else %}type="text"{% endif %}
+                      value="{{ a.value or '' }}"
+                      {% if a.field_type != "number" and a.field_type != "date" %}maxlength="200"{% endif %}
+                      {% if not a.required %}placeholder="(optional){% if a.unit %} - {{ a.unit }}{% endif %}"{% endif %}
+                      {% if a.required %}required{% endif %}
+                      {% if a.inherited %}disabled{% endif %}
+                    >
+                  {% endif %}
+                </div>
+              {% endfor %}
+            {% endif %}
+
+            <button class="btn btn-primary">Create Child</button>
+          </form>
+        </div>
+      {% endif %}
+    {% endcall %}
+
+    {{ documents_card(
+      'Documents',
+      sample.documents,
+      'download_sample_doc',
+      'upload_sample_doc',
+      {'sample_id': sample.id},
+      show_upload=True,
+      show_delete=(lab_role in ['owner','admin','editor']),
+      delete_endpoint='delete_sample_doc'
+    ) }}
+
+    {% call card('Sample Logs') %}
+      {% if sample_logs and sample_logs|length %}
+        <ul class="list-group mb-3">
+          {% for log in sample_logs %}
+            <li class="list-group-item">
+              <div class="d-flex justify-content-between align-items-start">
+                <div>
+                  <div class="fw-semibold">{{ log.title }}</div>
+                  {% if log.notes %}
+                    <div class="small text-muted" style="white-space: pre-wrap;">{{ log.notes }}</div>
+                  {% endif %}
+                  {% if log.user %}
+                    <div class="small text-muted">by {{ log.user.name or log.user.email }}</div>
+                  {% endif %}
+                </div>
+                <small class="text-muted">{{ log.created_at|lab_dt }}</small>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="text-muted">No log entries yet.</div>
+      {% endif %}
+
+      {% if lab_role in ['owner','admin','editor'] %}
+        <form method="post" action="{{ url_for('add_sample_log', lab_slug=(current_lab.slug or current_lab.id), project_id=sample.project.id, sample_id=sample.id) }}">
+          <div class="mb-2">
+            <label class="form-label">Title</label>
+            <input class="form-control" name="title" required>
+          </div>
+          <div class="mb-2">
+            <label class="form-label">Notes</label>
+            <textarea class="form-control" name="notes" rows="3"></textarea>
+          </div>
+          <button class="btn btn-primary">Add Log</button>
+        </form>
+      {% endif %}
+    {% endcall %}
 
   </div>
+
   <div class="col-lg-6">
 
-    {# Experiment lineage macro #}
     {% macro exp_chain(exp) -%}
       {% if exp.parent %}
         {{ exp_chain(exp.parent) }} &raquo;
@@ -235,114 +348,245 @@
       <a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=sample.project.id, experiment_id=exp.id) }}">{{ exp.title }}</a>
     {%- endmacro %}
 
-    <!-- Linked Experiments -->
     <div class="card card-body mb-3">
-      <h5 class="mb-2">Linked Experiments</h5>
-      <ul class="list-group">
-        {% for link in sample.experiment_links %}
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Linked Experiments</h5>
+        <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#linkExpForm-{{ sample.id }}">Link Experiment</button>
+      </div>
+
+      <ul class="list-group mb-3">
+        {% for item in combined_experiment_links %}
+          {% set link = item.link %}
+          {% set inherited = item.inherited %}
+          {% set source_sample = item.source_sample %}
           <li class="list-group-item">
             <div class="mb-1">
               {{ exp_chain(link.experiment) }}
+              {% if flagged_experiments and link.experiment_id in flagged_experiments %}
+                <span class="badge bg-danger ms-2">Flagged</span>
+              {% endif %}
+              {% if inherited %}
+                <span class="badge bg-secondary ms-2">Inherited from <a class="text-light" href="{{ url_for('view_sample', lab_slug=(current_lab.slug or current_lab.id), project_id=sample.project.id, sample_id=source_sample.id) }}">{{ source_sample.name }}</a></span>
+              {% endif %}
             </div>
             {% if link.notes %}
               <div class="small text-muted">{{ link.notes }}</div>
             {% endif %}
-            <form class="mt-1" method="post" action="{{ url_for('unlink_experiment', link_id=link.id) }}"
-                  onsubmit="return confirm('Remove link to this experiment?');">
-              <button class="btn btn-sm btn-outline-danger">Unlink</button>
-            </form>
+            {% if not inherited %}
+              <form class="mt-1" method="post" action="{{ url_for('unlink_experiment', link_id=link.id) }}" onsubmit="return confirm('Remove link to this experiment?');">
+                <button class="btn btn-sm btn-outline-danger">Unlink</button>
+              </form>
+            {% endif %}
           </li>
         {% else %}
           <li class="list-group-item">No experiments linked yet.</li>
         {% endfor %}
       </ul>
-    </div>
 
-    <!-- Link Experiment (no role) -->
-    <div class="card card-body mb-3">
-      <h5 class="mb-2">Link Experiment</h5>
-      <form method="post" action="{{ url_for('link_experiment', sample_id=sample.id) }}">
-        <div class="row g-2">
-          <div class="col-md-8">
-            <label class="form-label">Experiment</label>
-            <select class="form-select" name="experiment_id" required>
-              <option value="">Select...</option>
-              {% for e in exp_choices %}
-                <option value="{{ e.id }}">{{ e.title }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="col-md-4">
-            <label class="form-label">Notes (optional)</label>
-            <input class="form-control" name="notes" placeholder="e.g., context">
-          </div>
-        </div>
-        <div class="mt-3">
-          <button class="btn btn-primary">Add Link</button>
-        </div>
-      </form>
-      <div class="form-text mt-1">
-        Linking an experiment also records its full parent lineage.
-      </div>
-    </div>
-
-    <!-- Split Sample (create child) -->
-    <div class="card card-body">
-      <h5 class="mb-2">Split Sample (create child)</h5>
-      <form method="post" action="{{ url_for('split_sample', sample_id=sample.id) }}">
-        <div class="mb-2">
-          <label class="form-label">Child Name</label>
-          <input class="form-control" name="name" required placeholder="e.g., {{ sample.name }} – cut B">
-        </div>
-
-        {% if attr_defs and attr_defs|length %}
-          <h6 class="mt-2">Attributes (required by project)</h6>
-          {% for a in attr_defs %}
-            <div class="mb-2">
-              <label class="form-label">
-                {{ a.name }}
-                {% if a.unit %}<span class="text-muted">({{ a.unit }})</span>{% endif %}
-                {% if a.required %} *{% endif %}
-              </label>
-
-              {% if a.field_type == "select" %}
-                <select class="form-select" name="attr_{{ a.id }}" {% if a.required %}required{% endif %} {% if a.inherited %}disabled{% endif %}>
-                  {% if not a.required %}
-                    <option value="">(optional)</option>
-                  {% endif %}
-                  {% for choice in a.choices %}
-                    <option value="{{ choice }}" {% if a.value == choice %}selected{% endif %}>{{ choice }}</option>
-                  {% endfor %}
-                </select>
-              {% else %}
-                <input
-                  class="form-control"
-                  name="attr_{{ a.id }}"
-                  {% if a.field_type == "number" %}type="number" step="any" max="1000000000"
-                  {% elif a.field_type == "date" %}type="date"
-                  {% else %}type="text"{% endif %}
-                  value="{{ a.value or '' }}"
-                  {% if a.field_type != "number" and a.field_type != "date" %}maxlength="200"{% endif %}
-                  {% if not a.required %}placeholder="(optional){% if a.unit %} — {{ a.unit }}{% endif %}"{% endif %}
-                  {% if a.required %}required{% endif %}
-                  {% if a.inherited %}disabled{% endif %}
-                >
-              {% endif %}
+      <div class="collapse" id="linkExpForm-{{ sample.id }}">
+        <form method="post" action="{{ url_for('link_experiment', sample_id=sample.id) }}">
+          <div class="row g-2">
+            <div class="col-md-8">
+              <label class="form-label">Experiment</label>
+              <select class="form-select" name="experiment_id" required>
+                <option value="">Select...</option>
+                {% for e in exp_choices %}
+                  <option value="{{ e.id }}">{{ e.title }}</option>
+                {% endfor %}
+              </select>
             </div>
-          {% endfor %}
-        {% else %}
-          <div class="alert alert-warning mt-2">
-            This project has no sample attributes defined yet. The child will be created with only a name.
+            <div class="col-md-4">
+              <label class="form-label">Notes (optional)</label>
+              <input class="form-control" name="notes" placeholder="e.g., context">
+            </div>
           </div>
-        {% endif %}
-
-        <div class="mt-3">
-          <button class="btn btn-primary">Create Child</button>
-        </div>
-      </form>
+          <div class="mt-3 d-flex gap-2">
+            <button class="btn btn-primary">Add Link</button>
+            <button class="btn btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#linkExpForm-{{ sample.id }}">Cancel</button>
+          </div>
+          <div class="form-text mt-1">
+            Linking an experiment also records its full parent lineage.
+          </div>
+        </form>
+      </div>
     </div>
 
   </div>
 </div>
+
+<div class="row g-3 mt-2">
+  <div class="col-12">
+    {% call card('Sample Timeline') %}
+      <div id="sampleTimelineContainer">
+        <p class="text-muted">Loading timeline...</p>
+      </div>
+    {% endcall %}
+  </div>
+</div>
+
+<script>
+(function(){
+  const labSlug = "{{ current_lab.slug or current_lab.id }}";
+  const apiBase = labSlug ? `/lab/${labSlug}` : '';
+  const sampleId = {{ sample.id|tojson }};
+
+  function renderTimeline(data){
+    const container = document.getElementById('sampleTimelineContainer');
+    container.innerHTML = '';
+    const months = Object.keys(data).sort().reverse();
+    if (!months.length){
+      container.innerHTML = '<p class="text-muted">No timeline events yet.</p>';
+      return;
+    }
+    if (!monthPicker.value) monthPicker.value = months[0];
+    monthPicker.min = months[months.length - 1];
+    monthPicker.max = months[0];
+
+    const m = monthPicker.value;
+    const [yearStr, monthStr] = m.split('-');
+    const year = Number(yearStr);
+    const monthIndex0 = Number(monthStr) - 1;
+
+    const box = document.createElement('div');
+    box.className = 'mb-3 border rounded p-2';
+    const h = document.createElement('h6');
+    h.textContent = new Date(Date.UTC(year, monthIndex0, 1)).toLocaleString(undefined, { month: 'long', year: 'numeric' });
+    box.appendChild(h);
+
+    const first = new Date(Date.UTC(year, monthIndex0, 1));
+    const last = new Date(Date.UTC(year, monthIndex0 + 1, 0));
+    const daysInMonth = last.getUTCDate();
+    const startDay = first.getUTCDay();
+
+    const eventsByDay = {};
+    (data[m] || []).forEach(ev => {
+      const dayKey = (ev.timestamp || '').slice(0, 10);
+      if (!eventsByDay[dayKey]) eventsByDay[dayKey] = [];
+      eventsByDay[dayKey].push(ev);
+    });
+
+    const table = document.createElement('table');
+    table.className = 'table table-sm table-bordered mb-0';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th class="text-center">Sun</th><th class="text-center">Mon</th><th class="text-center">Tue</th><th class="text-center">Wed</th><th class="text-center">Thu</th><th class="text-center">Fri</th><th class="text-center">Sat</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+
+    let day = 1 - startDay;
+    for (let week = 0; week < 6; week++){
+      const tr = document.createElement('tr');
+      for (let d = 0; d < 7; d++){
+        const td = document.createElement('td');
+        td.style.verticalAlign = 'top';
+        td.style.minWidth = '120px';
+        td.style.height = '90px';
+        if (day < 1 || day > daysInMonth){
+          td.className = 'bg-body-tertiary';
+          tr.appendChild(td);
+          day++;
+          continue;
+        }
+        const dayStr = String(day).padStart(2, '0');
+        const dateKey = `${m}-${dayStr}`;
+        const header = document.createElement('div');
+        header.className = 'fw-semibold small mb-1';
+        header.textContent = day;
+        td.appendChild(header);
+
+        const evs = eventsByDay[dateKey] || [];
+        evs.forEach(ev => {
+          const item = document.createElement('div');
+          item.className = 'small text-truncate';
+          const typeLabel = (ev.type || '').replace('_', ' ');
+          const label = `${(ev.timestamp || '').slice(11,16)} · ${typeLabel} · ${ev.title}`;
+          if (ev.url){
+            const a = document.createElement('a');
+            a.href = ev.url;
+            a.textContent = label;
+            item.appendChild(a);
+          } else {
+            item.textContent = label;
+          }
+          td.appendChild(item);
+        });
+
+        tr.appendChild(td);
+        day++;
+      }
+      tbody.appendChild(tr);
+      if (day > daysInMonth) break;
+    }
+
+    table.appendChild(tbody);
+    box.appendChild(table);
+    container.appendChild(box);
+  }
+
+  const navBar = document.createElement('div');
+  navBar.className = 'mb-2 d-flex flex-wrap align-items-center gap-2';
+  const btnPrev = document.createElement('button'); btnPrev.className='btn btn-sm btn-outline-secondary'; btnPrev.textContent='Prev';
+  const monthPicker = document.createElement('input');
+  monthPicker.type = 'month';
+  monthPicker.className = 'form-control form-control-sm';
+  monthPicker.style.maxWidth = '180px';
+  monthPicker.setAttribute('aria-label', 'Select month');
+  const btnNext = document.createElement('button'); btnNext.className='btn btn-sm btn-outline-secondary'; btnNext.textContent='Next';
+  navBar.appendChild(btnPrev); navBar.appendChild(monthPicker); navBar.appendChild(btnNext);
+  const containerWrap = document.getElementById('sampleTimelineContainer');
+  containerWrap.parentNode.insertBefore(navBar, containerWrap);
+
+  function monthIndexValue(ym){
+    const parts = (ym || '').split('-');
+    if (parts.length !== 2) return null;
+    const y = Number(parts[0]);
+    const mVal = Number(parts[1]);
+    if (!Number.isFinite(y) || !Number.isFinite(mVal)) return null;
+    return y * 12 + (mVal - 1);
+  }
+
+  function addMonths(ym, delta){
+    const parts = (ym || '').split('-');
+    if (parts.length !== 2) return null;
+    let y = Number(parts[0]);
+    let mVal = Number(parts[1]);
+    if (!Number.isFinite(y) || !Number.isFinite(mVal)) return null;
+    mVal = mVal - 1 + delta;
+    y = y + Math.floor(mVal / 12);
+    mVal = (mVal % 12 + 12) % 12;
+    const mm = String(mVal + 1).padStart(2, '0');
+    return `${y}-${mm}`;
+  }
+
+  function stepMonth(delta){
+    const next = addMonths(monthPicker.value, delta);
+    if (!next) return;
+    const minIdx = monthIndexValue(monthPicker.min);
+    const maxIdx = monthIndexValue(monthPicker.max);
+    const nextIdx = monthIndexValue(next);
+    if (minIdx != null && nextIdx < minIdx) return;
+    if (maxIdx != null && nextIdx > maxIdx) return;
+    monthPicker.value = next;
+    renderTimeline(window._sample_tl_data || {});
+  }
+  btnPrev.addEventListener('click', ()=> stepMonth(-1));
+  btnNext.addEventListener('click', ()=> stepMonth(1));
+  monthPicker.addEventListener('change', ()=> renderTimeline(window._sample_tl_data || {}));
+  monthPicker.addEventListener('input', ()=> renderTimeline(window._sample_tl_data || {}));
+
+  async function loadTimeline(){
+    const url = `${apiBase}/sample/${sampleId}/timeline`;
+    const res = await fetch(url);
+    if (res.ok){
+      const data = await res.json();
+      window._sample_tl_data = data;
+      renderTimeline(data);
+    } else {
+      document.getElementById('sampleTimelineContainer').innerHTML = '<p class="text-danger">Failed to load timeline.</p>';
+    }
+  }
+
+  loadTimeline();
+})();
+</script>
 
 {% endblock %}

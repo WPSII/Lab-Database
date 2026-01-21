@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import card %}
 {% block content %}
 
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -130,7 +131,7 @@
 </div>
 {% endif %}
 
-<div class="card card-body mb-3">
+{% call card(None) %}
   <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
     <div>
       <h2 class="mb-1">{{ project.title }}</h2>
@@ -164,20 +165,49 @@
       </div>
     </div>
   </div>
-</div>
+{% endcall %}
 
 <div class="row g-3">
 
   <!-- Left: Sample tree -->
   <div class="col-lg-6">
-    <div class="card card-body mb-3">
+    {% call card('Samples in this Project') %}
       <div class="d-flex justify-content-between align-items-center mb-2">
-        <h5 class="mb-0">Samples in this Project</h5>
         <div class="d-flex gap-2">
           {% if lab_role and lab_role != 'viewer' %}
             <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#createProjectSampleModal">Create Sample</button>
             {% if can_manage %}
               <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#projectSampleClassModal">Add Sample Class</button>
+              {% if project_sample_classes and project_sample_classes|length %}
+                <div class="dropdown">
+                  <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                    Edit Sample Class
+                  </button>
+                  <ul class="dropdown-menu dropdown-menu-end">
+                    {% for psc in project_sample_classes %}
+                      <li class="px-2 py-1">
+                        <div class="d-flex align-items-center justify-content-between gap-2">
+                          <button
+                            class="dropdown-item flex-grow-1 text-start"
+                            data-bs-toggle="modal"
+                            data-bs-target="#projectSampleClassModal"
+                            data-psc='{{ {
+                              "id": psc.id,
+                              "sample_class_id": psc.sample_class_id,
+                              "name_override": psc.name_override,
+                              "attributes_override_json": psc.attributes_override_json
+                            }|tojson }}'>
+                            {{ psc.name_override or (psc.sample_class.name if psc.sample_class else 'Sample Class') }}
+                          </button>
+                          <form method="post" action="{{ url_for('delete_project_sample_class', project_id=project.id, psc_id=psc.id) }}" onsubmit="return confirm('Delete this project sample class?');">
+                            <button class="btn btn-sm btn-outline-danger">Delete</button>
+                          </form>
+                        </div>
+                      </li>
+                    {% endfor %}
+                  </ul>
+                </div>
+              {% endif %}
             {% endif %}
           {% endif %}
           <input id="sampleTreeFilter" class="form-control form-control-sm" placeholder="Filter by name…" style="max-width: 240px;">
@@ -197,30 +227,35 @@
         </li>
       {%- endmacro %}
 
-      {% if sample_tree_by_stock and sample_tree_by_stock|length %}
+      {% if sample_tree_by_class and sample_tree_by_class|length %}
         <div id="sampleTreeRoot">
-          {% for _, group in sample_tree_by_stock.items() %}
-            <div class="mb-3 sample-node" data-name="{{ group.label|lower }}">
-              <div class="d-flex align-items-center gap-2 fw-semibold">
-                {% if group.stock_id %}
-                  <a href="{{ url_for('view_stock_material', lab_slug=(current_lab.slug or current_lab.id), stock_id=group.stock_id) }}">{{ group.label }}</a>
-                  <span class="badge text-bg-info">Stock Material</span>
-                {% else %}
-                  <span>{{ group.label }}</span>
-                {% endif %}
-              </div>
-              <ul class="mb-2 mt-1">
-                {% for root in group.roots %}
-                  {{ render_sample_node(root) }}
-                {% endfor %}
-              </ul>
+          {% for _, class_group in sample_tree_by_class.items() %}
+            <div class="mb-3 sample-node" data-name="{{ class_group.label|lower }}">
+              <div class="fw-semibold">{{ class_group.label }}</div>
+              {% for _, stock_group in class_group.stocks.items() %}
+                <div class="ms-3 mt-2 sample-node" data-name="{{ stock_group.label|lower }}">
+                  <div class="d-flex align-items-center gap-2">
+                    {% if stock_group.stock_id %}
+                      <a href="{{ url_for('view_stock_material', lab_slug=(current_lab.slug or current_lab.id), stock_id=stock_group.stock_id) }}">{{ stock_group.label }}</a>
+                      <span class="badge text-bg-info">Stock Material</span>
+                    {% else %}
+                      <span class="text-muted">{{ stock_group.label }}</span>
+                    {% endif %}
+                  </div>
+                  <ul class="mb-2 mt-1">
+                    {% for root in stock_group.roots %}
+                      {{ render_sample_node(root) }}
+                    {% endfor %}
+                  </ul>
+                </div>
+              {% endfor %}
             </div>
           {% endfor %}
         </div>
       {% else %}
         <p class="text-muted mb-0">No samples in this project yet.</p>
       {% endif %}
-    </div>
+    {% endcall %}
   </div>
 
   <!-- Right: Attributes + Experiments -->
@@ -228,36 +263,50 @@
 
     <!-- Experiments -->
     <div class="card card-body">
-      <h5 class="mb-2">Experiments</h5>
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Experiments</h5>
+        <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#createExperimentModal">Create Experiment</button>
+      </div>
 
-      {% macro render_exp(node) -%}
-        <li>
-          <a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=project.id, experiment_id=node.id) }}">{{ node.title }}</a>
-          {% if node.children %}
-            <ul>
-              {% for c in node.children %}
-                {{ render_exp(c) }}
-              {% endfor %}
-            </ul>
-          {% endif %}
-        </li>
-      {%- endmacro %}
-
-      {% set roots = project.experiments | selectattr('parent_id', 'equalto', None) | list %}
-      {% if roots %}
-        <ul class="mb-3">
-          {% for r in roots %}
-            {{ render_exp(r) }}
+      {% set exps = sorted_experiments %}
+      {% if exps %}
+        <ul class="list-group mb-3">
+          {% for exp in exps %}
+            {% set neg = experiment_negative_flags.get(exp.id) if experiment_negative_flags else None %}
+            <li class="list-group-item d-flex justify-content-between align-items-start">
+              <div>
+                <a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=project.id, experiment_id=exp.id) }}">{{ exp.title }}</a>
+                {% if neg %}
+                  <span class="badge bg-danger ms-2">Flagged</span>
+                {% endif %}
+              </div>
+              <small class="text-muted">
+                {{ exp.start_at.strftime('%Y-%m-%d') if exp.start_at else '—' }}
+                &ndash;
+                {{ exp.end_at.strftime('%Y-%m-%d') if exp.end_at else '—' }}
+              </small>
+            </li>
           {% endfor %}
         </ul>
       {% else %}
         <p class="text-muted mb-3">No experiments for this project.</p>
       {% endif %}
 
-      <!-- Quick-create Experiment -->
-      <div class="border-top pt-3 mt-2">
-        <h6 class="mb-2">Create Experiment</h6>
-        <form method="post" action="{{ url_for('create_experiment', project_id=project.id) }}">
+    </div>
+
+  </div>
+</div>
+
+<!-- Create Experiment Modal -->
+<div class="modal fade" id="createExperimentModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('create_experiment', project_id=project.id) }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Create Experiment</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
           <div class="mb-2">
             <label class="form-label">Title</label>
             <input class="form-control" name="title" required>
@@ -266,11 +315,13 @@
             <label class="form-label">Details</label>
             <textarea class="form-control" name="description" rows="3" placeholder="Optional notes, parameters, etc."></textarea>
           </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
           <button class="btn btn-primary">Create</button>
-        </form>
-      </div>
+        </div>
+      </form>
     </div>
-
   </div>
 </div>
 
@@ -307,6 +358,13 @@
             </select>
             <div class="form-text">Sample Class is inherited from the selected stock material. For child samples this is inherited from the root and cannot be changed.</div>
             <div class="small text-muted mt-1" id="proj-stock-class-label"></div>
+          </div>
+
+          <div class="mb-3" id="proj-stock-extra-wrap" style="display:none;">
+            <label class="form-label">Additional Stock Materials (mixture)</label>
+            <div id="proj-stock-extra-rows"></div>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="proj-stock-add-extra">+ Add material</button>
+            <div class="form-text">Add one or more additional materials and specify quantity used for each.</div>
           </div>
 
             <div class="mb-3 border rounded p-2 bg-body-tertiary" id="proj-stock-tree" style="display:none;"></div>
@@ -423,6 +481,9 @@
   const parentSel = document.getElementById('proj-parent-select');
   const stockWrap = document.getElementById('proj-stock-wrap');
   const stockSel = document.getElementById('proj-stock-select');
+  const extraWrap = document.getElementById('proj-stock-extra-wrap');
+  const extraRows = document.getElementById('proj-stock-extra-rows');
+  const addExtraBtn = document.getElementById('proj-stock-add-extra');
   const stockClassLabel = document.getElementById('proj-stock-class-label');
   const stockQtyWrap = document.getElementById('proj-stock-qty-wrap');
   const stockQtyInput = document.getElementById('proj-stock-new-qty');
@@ -581,6 +642,93 @@
     });
   }
 
+  function updateExtraRow(row){
+    const sel = row.querySelector('select');
+    const qty = row.querySelector('input[name="stock_use_qty_extra"]');
+    const oldQty = row.querySelector('.extra-old-qty');
+    const newQty = row.querySelector('.extra-new-qty');
+    const unitEls = row.querySelectorAll('.extra-unit');
+    const stock = stockData.find(s => s.id === Number(sel.value || 0));
+    const oldVal = (stock && stock.quantity !== null && stock.quantity !== undefined) ? stock.quantity : '';
+    const unit = stock && stock.unit ? stock.unit : '';
+    if (oldQty) oldQty.value = oldVal;
+    unitEls.forEach(u => u.textContent = unit);
+    if (newQty) {
+      const q = parseFloat(qty.value);
+      if (oldVal !== '' && !Number.isNaN(q)) {
+        newQty.value = (Number(oldVal) - q);
+      } else {
+        newQty.value = '';
+      }
+    }
+  }
+
+  function makeExtraRow(){
+    const row = document.createElement('div');
+    row.className = 'border rounded p-2 mb-2';
+    row.innerHTML = `
+      <div class="d-flex gap-2 align-items-end flex-wrap">
+        <div class="flex-grow-1" style="min-width: 220px;">
+          <label class="form-label">Stock Material</label>
+          <select class="form-select" name="stock_material_id_extra"></select>
+        </div>
+        <div style="min-width: 160px;">
+          <label class="form-label">Qty Used</label>
+          <div class="input-group">
+            <input class="form-control" name="stock_use_qty_extra" type="number" step="any" min="0">
+            <span class="input-group-text extra-unit"></span>
+          </div>
+        </div>
+        <div style="min-width: 160px;">
+          <label class="form-label">Old Qty</label>
+          <div class="input-group">
+            <input class="form-control extra-old-qty" type="number" step="any" readonly>
+            <span class="input-group-text extra-unit"></span>
+          </div>
+        </div>
+        <div style="min-width: 160px;">
+          <label class="form-label">New Qty</label>
+          <div class="input-group">
+            <input class="form-control extra-new-qty" type="number" step="any" readonly>
+            <span class="input-group-text extra-unit"></span>
+          </div>
+        </div>
+        <div>
+          <button type="button" class="btn btn-sm btn-outline-danger mt-3">Remove</button>
+        </div>
+      </div>
+    `;
+    const sel = row.querySelector('select');
+    resetSel(sel, 'Select a stock material…');
+    stockData.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.lot_number ? `${m.name} — ${m.lot_number}` : m.name;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener('change', () => updateExtraRow(row));
+    const qty = row.querySelector('input[name="stock_use_qty_extra"]');
+    qty.addEventListener('input', () => updateExtraRow(row));
+    row.querySelector('button').addEventListener('click', () => {
+      row.remove();
+      updateClassSelectForMix();
+    });
+    return row;
+  }
+
+  function resetExtraRows(){
+    if (extraRows) extraRows.innerHTML = '';
+  }
+
+  function updateClassSelectForMix(){
+    if (!classSel) return;
+    const hasExtra = extraRows && extraRows.children.length > 0;
+    const wantsStock = fromStockYes && fromStockYes.checked;
+    const hasParent = parentSel && parentSel.value;
+    classSel.disabled = !!hasParent || (wantsStock && !hasExtra);
+    if (wantsStock && !hasExtra) classSel.value = '';
+  }
+
   function buildStockTree(){
     if (!stockTree) return;
     stockTree.innerHTML = '';
@@ -669,8 +817,9 @@
     const stock = stockData.find(s => s.id === stockId);
     const classId = stock ? stock.sample_class_id : null;
     const classAttrs = stock && stock.class_attrs ? stock.class_attrs : null;
+    const hasExtra = extraRows && extraRows.children.length > 0;
     if (stockClassLabel){
-      stockClassLabel.textContent = classId && stock && stock.sample_class_name ? `Sample Class: ${stock.sample_class_name}` : '';
+      stockClassLabel.textContent = hasExtra ? 'Sample Class: (mixture)' : (classId && stock && stock.sample_class_name ? `Sample Class: ${stock.sample_class_name}` : '');
     }
     if (oldQtyInput){
       oldQtyInput.value = (stock && stock.quantity !== null && stock.quantity !== undefined) ? stock.quantity : '';
@@ -678,11 +827,13 @@
     if (oldQtyUnit) oldQtyUnit.textContent = stock && stock.unit ? stock.unit : '';
     if (stockQtyUnit) stockQtyUnit.textContent = stock && stock.unit ? stock.unit : '';
     if (sampleQtyUnit) sampleQtyUnit.textContent = stock && stock.unit ? stock.unit : '';
-    if (classId){
-      if (classSel) classSel.value = String(classId);
-      loadClassAttrs(classId, classAttrs, !!classAttrs);
-    } else {
-      loadClassAttrs(null);
+    if (!hasExtra) {
+      if (classId){
+        if (classSel) classSel.value = String(classId);
+        loadClassAttrs(classId, classAttrs, !!classAttrs);
+      } else {
+        loadClassAttrs(null);
+      }
     }
   }
 
@@ -691,6 +842,7 @@
     const hasParent = parentSel && parentSel.value;
     buildParentTree();
     if (stockWrap) stockWrap.style.display = wantsStock ? 'block' : 'none';
+    if (extraWrap) extraWrap.style.display = (wantsStock && !hasParent) ? 'block' : 'none';
     if (stockTree) stockTree.style.display = wantsStock ? 'block' : 'none';
     if (sampleQtyWrap) sampleQtyWrap.style.display = wantsStock ? 'block' : 'none';
     if (oldQtyWrap) oldQtyWrap.style.display = wantsStock ? 'block' : 'none';
@@ -714,11 +866,10 @@
       if (oldQtyUnit) oldQtyUnit.textContent = '';
       if (stockQtyUnit) stockQtyUnit.textContent = '';
       if (sampleQtyUnit) sampleQtyUnit.textContent = '';
+      resetExtraRows();
+      updateClassSelectForMix();
     }
-    if (classSel){
-      classSel.disabled = wantsStock || !!hasParent;
-      if (wantsStock) classSel.value = '';
-    }
+    updateClassSelectForMix();
     if (!wantsStock){
       if (stockClassLabel) stockClassLabel.textContent = '';
       if (!classSel || !classSel.value) loadClassAttrs(null);
@@ -736,6 +887,13 @@
       updateStockClassAttrs();
     });
   }
+  if (addExtraBtn){
+    addExtraBtn.addEventListener('click', () => {
+      if (!extraRows) return;
+      extraRows.appendChild(makeExtraRow());
+      updateClassSelectForMix();
+    });
+  }
   if (parentSel){
     parentSel.addEventListener('change', function(){
       const parentId = Number(this.value || 0);
@@ -747,7 +905,8 @@
           stockSel.value = '';
         }
         stockSel.disabled = true;
-        if (classSel) classSel.disabled = true;
+        resetExtraRows();
+        updateClassSelectForMix();
         fetch(`${apiBase}/api/sample/${parentId}/attr-values`).then(r=>r.json()).then(map=>{
           const groups = document.querySelectorAll('#proj-attrs-fields .mb-2');
           groups.forEach(g=>{
@@ -768,7 +927,7 @@
         }).catch(()=>{});
       } else {
         stockSel.disabled = false;
-        if (classSel) classSel.disabled = (fromStockYes && fromStockYes.checked);
+        updateClassSelectForMix();
         const groups = document.querySelectorAll('#proj-attrs-fields .mb-2');
         groups.forEach(g=>{
           const input = g.querySelector('input, select'); if(!input) return;

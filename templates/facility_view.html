@@ -16,7 +16,7 @@
   </div>
 </div>
 
-<div class="card card-body">
+<div class="card card-body position-relative">
   <div class="row g-3">
     <div class="col-md-7">
       <h6 class="text-muted mb-1">Address</h6>
@@ -45,59 +45,64 @@
     <h6 class="text-muted mb-1">Description</h6>
     <div>{{ facility.description }}</div>
   {% endif %}
+
+  {% if lab_role in ['owner','admin'] %}
+    <button class="btn btn-sm btn-outline-primary position-absolute top-0 end-0 m-3" data-bs-toggle="collapse" data-bs-target="#editFacilityForm" aria-expanded="false" aria-controls="editFacilityForm">Edit</button>
+  {% endif %}
 </div>
 
 {% if lab_role in ['owner','admin'] %}
-  <div class="card card-body mt-3">
-    <h5 class="mb-3">Edit Facility</h5>
-    <form method="post" action="{{ url_for('update_facility_for_lab', lab_slug=(current_lab.slug or current_lab.id), facility_slug=(facility.slug or facility.id)) }}">
-      <div class="mb-3">
-        <label class="form-label">Name</label>
-        <input class="form-control" name="name" value="{{ facility.name }}" required>
-      </div>
-      <div class="mb-3">
-        <label class="form-label">Address Line 1</label>
-        <input class="form-control" name="address_line1" value="{{ facility.address_line1 }}" required>
-      </div>
-      <div class="mb-3">
-        <label class="form-label">Address Line 2</label>
-        <input class="form-control" name="address_line2" value="{{ facility.address_line2 }}">
-      </div>
-      <div class="row g-2">
-        <div class="col-md-6">
-          <label class="form-label">City</label>
-          <input class="form-control" name="city" value="{{ facility.city }}" required>
+  <div class="collapse mt-3" id="editFacilityForm">
+    <div class="card card-body">
+      <h5 class="mb-3">Edit Facility</h5>
+      <form method="post" action="{{ url_for('update_facility_for_lab', lab_slug=(current_lab.slug or current_lab.id), facility_slug=(facility.slug or facility.id)) }}">
+        <div class="mb-3">
+          <label class="form-label">Name</label>
+          <input class="form-control" name="name" value="{{ facility.name }}" required>
         </div>
-        <div class="col-md-3">
-          <label class="form-label">State/Province</label>
-          <select class="form-select" id="facility-state-select" name="state" data-selected-state="{{ facility.state or '' }}" required></select>
-          <input class="form-control mt-2 d-none" id="facility-state-input" name="state_text" placeholder="State/Province" value="{{ facility.state }}">
+        <div class="mb-3">
+          <label class="form-label">Address Line 1</label>
+          <input class="form-control" name="address_line1" value="{{ facility.address_line1 }}" required>
         </div>
-        <div class="col-md-3">
-          <label class="form-label">Postal Code</label>
-          <input class="form-control" name="postal_code" value="{{ facility.postal_code }}" required>
+        <div class="mb-3">
+          <label class="form-label">Address Line 2</label>
+          <input class="form-control" name="address_line2" value="{{ facility.address_line2 }}">
         </div>
-      </div>
-      <div class="mt-2 mb-3">
-        <label class="form-label">Country</label>
-        <select class="form-select" id="facility-country-select" name="country" data-selected-country="{{ facility.country or '' }}" required></select>
-      </div>
-      <div class="mb-3">
-        <label class="form-label">Location</label>
-        <input class="form-control" name="location" value="{{ facility.location }}">
-      </div>
-      <div class="mb-3">
-        <label class="form-label">Manager</label>
-        <select class="form-select" name="manager_user_id" required>
-          {% for m in current_lab.members %}
-            {% if m.user and m.role in ['owner','admin'] %}
-              <option value="{{ m.user.id }}" {% if facility.manager and facility.manager.id == m.user.id %}selected{% endif %}>{{ m.user.name or m.user.email }}</option>
-            {% endif %}
-          {% endfor %}
-        </select>
-      </div>
-      <div class="mb-3">
-        <label class="form-label">Description</label>
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label">City</label>
+            <input class="form-control" name="city" value="{{ facility.city }}" required>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">State/Province</label>
+            <select class="form-select" id="facility-state-select" name="state" data-selected-state="{{ facility.state or '' }}" required></select>
+            <input class="form-control mt-2 d-none" id="facility-state-input" name="state_text" placeholder="State/Province" value="{{ facility.state }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">Postal Code</label>
+            <input class="form-control" name="postal_code" value="{{ facility.postal_code }}" required>
+          </div>
+        </div>
+        <div class="mt-2 mb-3">
+          <label class="form-label">Country</label>
+          <select class="form-select" id="facility-country-select" name="country" data-selected-country="{{ facility.country or '' }}" required></select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Location</label>
+          <input class="form-control" name="location" value="{{ facility.location }}">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Manager</label>
+          <select class="form-select" name="manager_user_id" required>
+            {% for m in current_lab.members %}
+              {% if m.user and m.role in ['owner','admin'] %}
+                <option value="{{ m.user.id }}" {% if facility.manager and facility.manager.id == m.user.id %}selected{% endif %}>{{ m.user.name or m.user.email }}</option>
+              {% endif %}
+            {% endfor %}
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Description</label>
         <textarea class="form-control" name="description" rows="3">{{ facility.description }}</textarea>
       </div>
       <button class="btn btn-primary">Save Changes</button>
