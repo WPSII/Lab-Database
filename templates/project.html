@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import card %}
 {% block content %}
 
 <div class="d-flex justify-content-between align-items-center mb-3">
@@ -130,7 +131,7 @@
 </div>
 {% endif %}
 
-<div class="card card-body mb-3">
+{% call card(None) %}
   <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
     <div>
       <h2 class="mb-1">{{ project.title }}</h2>
@@ -164,15 +165,14 @@
       </div>
     </div>
   </div>
-</div>
+{% endcall %}
 
 <div class="row g-3">
 
   <!-- Left: Sample tree -->
   <div class="col-lg-6">
-    <div class="card card-body mb-3">
+    {% call card('Samples in this Project') %}
       <div class="d-flex justify-content-between align-items-center mb-2">
-        <h5 class="mb-0">Samples in this Project</h5>
         <div class="d-flex gap-2">
           {% if lab_role and lab_role != 'viewer' %}
             <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#createProjectSampleModal">Create Sample</button>
@@ -255,7 +255,7 @@
       {% else %}
         <p class="text-muted mb-0">No samples in this project yet.</p>
       {% endif %}
-    </div>
+    {% endcall %}
   </div>
 
   <!-- Right: Attributes + Experiments -->
@@ -263,36 +263,50 @@
 
     <!-- Experiments -->
     <div class="card card-body">
-      <h5 class="mb-2">Experiments</h5>
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Experiments</h5>
+        <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#createExperimentModal">Create Experiment</button>
+      </div>
 
-      {% macro render_exp(node) -%}
-        <li>
-          <a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=project.id, experiment_id=node.id) }}">{{ node.title }}</a>
-          {% if node.children %}
-            <ul>
-              {% for c in node.children %}
-                {{ render_exp(c) }}
-              {% endfor %}
-            </ul>
-          {% endif %}
-        </li>
-      {%- endmacro %}
-
-      {% set roots = project.experiments | selectattr('parent_id', 'equalto', None) | list %}
-      {% if roots %}
-        <ul class="mb-3">
-          {% for r in roots %}
-            {{ render_exp(r) }}
+      {% set exps = sorted_experiments %}
+      {% if exps %}
+        <ul class="list-group mb-3">
+          {% for exp in exps %}
+            {% set neg = experiment_negative_flags.get(exp.id) if experiment_negative_flags else None %}
+            <li class="list-group-item d-flex justify-content-between align-items-start">
+              <div>
+                <a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=project.id, experiment_id=exp.id) }}">{{ exp.title }}</a>
+                {% if neg %}
+                  <span class="badge bg-danger ms-2">Flagged</span>
+                {% endif %}
+              </div>
+              <small class="text-muted">
+                {{ exp.start_at.strftime('%Y-%m-%d') if exp.start_at else '—' }}
+                &ndash;
+                {{ exp.end_at.strftime('%Y-%m-%d') if exp.end_at else '—' }}
+              </small>
+            </li>
           {% endfor %}
         </ul>
       {% else %}
         <p class="text-muted mb-3">No experiments for this project.</p>
       {% endif %}
 
-      <!-- Quick-create Experiment -->
-      <div class="border-top pt-3 mt-2">
-        <h6 class="mb-2">Create Experiment</h6>
-        <form method="post" action="{{ url_for('create_experiment', project_id=project.id) }}">
+    </div>
+
+  </div>
+</div>
+
+<!-- Create Experiment Modal -->
+<div class="modal fade" id="createExperimentModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{{ url_for('create_experiment', project_id=project.id) }}">
+        <div class="modal-header">
+          <h5 class="modal-title">Create Experiment</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
           <div class="mb-2">
             <label class="form-label">Title</label>
             <input class="form-control" name="title" required>
@@ -301,11 +315,13 @@
             <label class="form-label">Details</label>
             <textarea class="form-control" name="description" rows="3" placeholder="Optional notes, parameters, etc."></textarea>
           </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
           <button class="btn btn-primary">Create</button>
-        </form>
-      </div>
+        </div>
+      </form>
     </div>
-
   </div>
 </div>
 

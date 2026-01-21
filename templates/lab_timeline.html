@@ -40,28 +40,154 @@
   </div>
 </form>
 
-{% if grouped and grouped|length %}
-  {% for month, events in grouped.items() %}
-    <div class="card card-body mb-3">
-      <h5 class="mb-3">{{ month }}</h5>
-      <ul class="list-group">
-        {% for ev in events %}
-          <li class="list-group-item d-flex justify-content-between align-items-start">
-            <div>
-              <div class="fw-semibold">{{ ev.title or ev.entity_type }}</div>
-              <div class="small text-muted">
-                {{ ev.entity_type.replace('_',' ').title() }} · {{ ev.event_type.title() }}
-                {% if ev.meta and ev.meta.project_id %} · Project #{{ ev.meta.project_id }}{% endif %}
-              </div>
-            </div>
-            <div class="text-muted small">{{ ev.occurred_at }}</div>
-          </li>
-        {% endfor %}
-      </ul>
-    </div>
-  {% endfor %}
-{% else %}
-  <div class="alert alert-info">No timeline events yet.</div>
-{% endif %}
+<div class="card card-body mb-3">
+  <div id="labTimelineContainer">
+    <p class="text-muted">Loading timeline…</p>
+  </div>
+</div>
+
+<script>
+(function(){
+  const data = {{ grouped|tojson }};
+
+  function renderTimeline(tl){
+    const container = document.getElementById('labTimelineContainer');
+    container.innerHTML = '';
+    const months = Object.keys(tl || {}).sort().reverse();
+    if (!months.length){
+      container.innerHTML = '<p class="text-muted">No timeline events yet.</p>';
+      return;
+    }
+    if (!monthPicker.value) monthPicker.value = months[0];
+    monthPicker.min = months[months.length - 1];
+    monthPicker.max = months[0];
+
+    const m = monthPicker.value;
+    const [yearStr, monthStr] = m.split('-');
+    const year = Number(yearStr);
+    const monthIndex0 = Number(monthStr) - 1;
+
+    const box = document.createElement('div');
+    box.className = 'mb-3 border rounded p-2';
+    const h = document.createElement('h6');
+    h.textContent = new Date(Date.UTC(year, monthIndex0, 1)).toLocaleString(undefined, { month: 'long', year: 'numeric' });
+    box.appendChild(h);
+
+    const first = new Date(Date.UTC(year, monthIndex0, 1));
+    const last = new Date(Date.UTC(year, monthIndex0 + 1, 0));
+    const daysInMonth = last.getUTCDate();
+    const startDay = first.getUTCDay();
+
+    const eventsByDay = {};
+    (tl[m] || []).forEach(ev => {
+      const dayKey = (ev.occurred_at || '').slice(0, 10);
+      if (!eventsByDay[dayKey]) eventsByDay[dayKey] = [];
+      eventsByDay[dayKey].push(ev);
+    });
+
+    const table = document.createElement('table');
+    table.className = 'table table-sm table-bordered mb-0';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th class="text-center">Sun</th><th class="text-center">Mon</th><th class="text-center">Tue</th><th class="text-center">Wed</th><th class="text-center">Thu</th><th class="text-center">Fri</th><th class="text-center">Sat</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+
+    let day = 1 - startDay;
+    for (let week = 0; week < 6; week++){
+      const tr = document.createElement('tr');
+      for (let d = 0; d < 7; d++){
+        const td = document.createElement('td');
+        td.style.verticalAlign = 'top';
+        td.style.minWidth = '120px';
+        td.style.height = '90px';
+        if (day < 1 || day > daysInMonth){
+          td.className = 'bg-body-tertiary';
+          tr.appendChild(td);
+          day++;
+          continue;
+        }
+        const dayStr = String(day).padStart(2, '0');
+        const dateKey = `${m}-${dayStr}`;
+        const header = document.createElement('div');
+        header.className = 'fw-semibold small mb-1';
+        header.textContent = day;
+        td.appendChild(header);
+
+        const evs = eventsByDay[dateKey] || [];
+        evs.forEach(ev => {
+          const item = document.createElement('div');
+          item.className = 'small text-truncate';
+          const entityLabel = (ev.entity_type || '').replace('_', ' ');
+          const label = `${(ev.occurred_at || '').slice(11,16)} · ${entityLabel} · ${(ev.title || ev.entity_type)}`;
+          item.textContent = label;
+          td.appendChild(item);
+        });
+
+        tr.appendChild(td);
+        day++;
+      }
+      tbody.appendChild(tr);
+      if (day > daysInMonth) break;
+    }
+
+    table.appendChild(tbody);
+    box.appendChild(table);
+    container.appendChild(box);
+  }
+
+  const navBar = document.createElement('div');
+  navBar.className = 'mb-2 d-flex flex-wrap align-items-center gap-2';
+  const btnPrev = document.createElement('button'); btnPrev.className='btn btn-sm btn-outline-secondary'; btnPrev.textContent='Prev';
+  const monthPicker = document.createElement('input');
+  monthPicker.type = 'month';
+  monthPicker.className = 'form-control form-control-sm';
+  monthPicker.style.maxWidth = '180px';
+  monthPicker.setAttribute('aria-label', 'Select month');
+  const btnNext = document.createElement('button'); btnNext.className='btn btn-sm btn-outline-secondary'; btnNext.textContent='Next';
+  navBar.appendChild(btnPrev); navBar.appendChild(monthPicker); navBar.appendChild(btnNext);
+  const containerWrap = document.getElementById('labTimelineContainer');
+  containerWrap.parentNode.insertBefore(navBar, containerWrap);
+
+  function monthIndexValue(ym){
+    const parts = (ym || '').split('-');
+    if (parts.length !== 2) return null;
+    const y = Number(parts[0]);
+    const m = Number(parts[1]);
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
+    return y * 12 + (m - 1);
+  }
+
+  function addMonths(ym, delta){
+    const parts = (ym || '').split('-');
+    if (parts.length !== 2) return null;
+    let y = Number(parts[0]);
+    let m = Number(parts[1]);
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
+    m = m - 1 + delta;
+    y = y + Math.floor(m / 12);
+    m = (m % 12 + 12) % 12;
+    const mm = String(m + 1).padStart(2, '0');
+    return `${y}-${mm}`;
+  }
+
+  function stepMonth(delta){
+    const next = addMonths(monthPicker.value, delta);
+    if (!next) return;
+    const minIdx = monthIndexValue(monthPicker.min);
+    const maxIdx = monthIndexValue(monthPicker.max);
+    const nextIdx = monthIndexValue(next);
+    if (minIdx != null && nextIdx < minIdx) return;
+    if (maxIdx != null && nextIdx > maxIdx) return;
+    monthPicker.value = next;
+    renderTimeline(data);
+  }
+  btnPrev.addEventListener('click', ()=> stepMonth(-1));
+  btnNext.addEventListener('click', ()=> stepMonth(1));
+  monthPicker.addEventListener('change', ()=> renderTimeline(data));
+  monthPicker.addEventListener('input', ()=> renderTimeline(data));
+
+  renderTimeline(data);
+})();
+</script>
 
 {% endblock %}

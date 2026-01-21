@@ -1,4 +1,9 @@
 import json
+import os
+import re
+
+from flask import send_from_directory
+from werkzeug.utils import secure_filename
 
 
 def safe_json_loads(text, default=None):
@@ -12,6 +17,36 @@ def safe_json_loads(text, default=None):
         return json.loads(text)
     except Exception:
         return default if default is not None else []
+
+
+def safe_slug(value: str, max_len: int = 40) -> str:
+    s = (value or '').strip()
+    if not s:
+        return ''
+    s2 = re.sub(r"[^0-9a-zA-Z]+", '-', s).strip('-').lower()
+    return s2[:max_len]
+
+
+def save_uploaded_file(file, folder: str) -> tuple[str, str]:
+    safe_name = secure_filename(file.filename)
+    stored_path = os.path.join(folder, safe_name)
+    base, ext = os.path.splitext(safe_name)
+    i = 1
+    while os.path.exists(stored_path):
+        safe_name = f"{base}({i}){ext}"
+        stored_path = os.path.join(folder, safe_name)
+        i += 1
+    file.save(stored_path)
+    return stored_path, safe_name
+
+
+def send_stored_file(stored_path: str, download_name: str):
+    return send_from_directory(
+        os.path.dirname(stored_path),
+        os.path.basename(stored_path),
+        as_attachment=True,
+        download_name=download_name,
+    )
 
 
 # --- Sample lineage helpers ---

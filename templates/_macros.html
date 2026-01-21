@@ -1,0 +1,62 @@
+{% macro card(title=None, class_name='card card-body mb-3', title_class='mb-2') -%}
+  <div class="{{ class_name }}">
+    {% if title %}<h5 class="{{ title_class }}">{{ title }}</h5>{% endif %}
+    {{ caller() }}
+  </div>
+{%- endmacro %}
+
+{% macro documents_card(title, documents, download_endpoint, upload_endpoint=None, upload_kwargs={}, show_upload=True, empty_text='No documents uploaded.', show_date=False, show_delete=False, delete_endpoint=None) -%}
+  <div class="card card-body mb-3">
+    <h5 class="mb-2">{{ title }}</h5>
+    {% if documents and documents|length %}
+      <ul class="list-group mb-3">
+        {% for d in documents %}
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            {% if show_date %}
+              <div>
+                <a href="{{ url_for(download_endpoint, doc_id=d.id) }}">{{ d.filename }}</a>
+                {% if d.uploaded_by %}
+                  <div class="small text-muted">Uploaded by {{ d.uploaded_by.name or d.uploaded_by.email }}</div>
+                {% endif %}
+              </div>
+              <div class="d-flex align-items-center gap-2">
+                <small class="text-muted">{{ d.uploaded_at.strftime('%Y-%m-%d') if d.uploaded_at else '' }}</small>
+                {% if show_delete and delete_endpoint %}
+                  <form method="post" action="{{ url_for(delete_endpoint, doc_id=d.id) }}" onsubmit="return confirm('Delete this document?');">
+                    <button class="btn btn-sm btn-outline-danger">Delete</button>
+                  </form>
+                {% endif %}
+              </div>
+            {% else %}
+              <div>
+                <span>{{ d.filename }}</span>
+                {% if d.uploaded_by %}
+                  <div class="small text-muted">Uploaded by {{ d.uploaded_by.name or d.uploaded_by.email }}</div>
+                {% endif %}
+              </div>
+              <div class="d-flex gap-2">
+                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for(download_endpoint, doc_id=d.id) }}">Download</a>
+                {% if show_delete and delete_endpoint %}
+                  <form method="post" action="{{ url_for(delete_endpoint, doc_id=d.id) }}" onsubmit="return confirm('Delete this document?');">
+                    <button class="btn btn-sm btn-outline-danger">Delete</button>
+                  </form>
+                {% endif %}
+              </div>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <div class="text-muted">{{ empty_text }}</div>
+    {% endif %}
+
+    {% if upload_endpoint and show_upload %}
+      <form method="post" action="{{ url_for(upload_endpoint, **upload_kwargs) }}" enctype="multipart/form-data">
+        <div class="input-group">
+          <input type="file" class="form-control" name="file" required>
+          <button class="btn btn-primary">Upload</button>
+        </div>
+      </form>
+    {% endif %}
+  </div>
+{%- endmacro %}

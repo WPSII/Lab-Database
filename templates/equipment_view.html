@@ -1,0 +1,842 @@
+{% extends "base.html" %}
+{% from "_macros.html" import card %}
+{% block content %}
+
+<div class="mb-3">
+  <a class="btn btn-outline-primary" href="{{ url_for('list_equipment_for_lab', lab_slug=(current_lab.slug or current_lab.id)) if current_lab else url_for('list_equipment') }}">Equipment</a>
+</div>
+
+<div class="card card-body mb-3">
+  <div class="d-flex justify-content-between align-items-start gap-2">
+    <div>
+      <h2 class="mb-1">{{ equipment.name }}</h2>
+      <div class="text-muted">{{ equipment.model or '—' }}{% if equipment.serial_number %} · {{ equipment.serial_number }}{% endif %}</div>
+      <div class="small text-muted mt-1">Created {{ equipment.created_at.strftime('%Y-%m-%d') }}</div>
+      {% if equipment.project %}
+        <div class="mt-1">Project: <a href="{{ url_for('view_project', lab_slug=(current_lab.slug or current_lab.id), project_id=equipment.project.id) if current_lab else url_for('view_project', project_id=equipment.project.id) }}">{{ equipment.project.title }}</a></div>
+      {% endif %}
+    </div>
+    <div class="text-center" style="max-width:200px;">
+      <div class="fw-semibold small mb-1">QR Code</div>
+      <img src="{{ url_for('equipment_qr', equipment_id=equipment.id) }}"
+           alt="QR for {{ equipment.name }}"
+           class="img-fluid"
+           style="max-width:180px;">
+      <div class="form-text">Scan to open this equipment.</div>
+    </div>
+  </div>
+
+  <div class="mt-3">
+    <dl class="row mb-0">
+      <dt class="col-3">Model</dt><dd class="col-9">{{ equipment.model or '—' }}</dd>
+      <dt class="col-3">Serial Number</dt><dd class="col-9">{{ equipment.serial_number or '—' }}</dd>
+      <dt class="col-3">Manufacturer</dt><dd class="col-9">{{ equipment.manufacturer or '—' }}</dd>
+      <dt class="col-3">Location</dt><dd class="col-9">{{ equipment.location or '—' }}</dd>
+        <dt class="col-3">Facility</dt>
+        <dd class="col-9">
+          {% if equipment.facility %}
+            <a href="{{ url_for('view_facility_for_lab', lab_slug=(current_lab.slug or current_lab.id), facility_slug=equipment.facility.slug or equipment.facility.id) }}">{{ equipment.facility.name }}</a>
+          {% else %}
+            &mdash;
+          {% endif %}
+        </dd>
+      <dt class="col-3">Purchase Date</dt><dd class="col-9">{{ equipment.purchase_date.strftime('%Y-%m-%d') if equipment.purchase_date else '—' }}</dd>
+      <dt class="col-3">Status</dt><dd class="col-9">{{ equipment.status or '—' }}</dd>
+    </dl>
+  </div>
+
+  {% if lab_role in ['owner','admin','editor'] and equipment.database_id %}
+    <div class="mt-3">
+      <button class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#editEquipmentModal">Edit Details</button>
+    </div>
+  {% endif %}
+</div>
+
+{% if lab_role in ['owner','admin','editor'] and equipment.database_id %}
+  <div class="modal fade" id="editEquipmentModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <form method="post" action="{{ url_for('edit_equipment_for_lab', lab_slug=(current_lab.slug or current_lab.id), equipment_id=equipment.id) }}">
+          <div class="modal-header">
+            <h5 class="modal-title">Edit Equipment Details</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label">Name</label>
+                <input class="form-control" name="name" value="{{ equipment.name }}" required>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Model</label>
+                <input class="form-control" name="model" value="{{ equipment.model or '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Serial Number</label>
+                <input class="form-control" name="serial_number" value="{{ equipment.serial_number or '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Manufacturer</label>
+                <input class="form-control" name="manufacturer" value="{{ equipment.manufacturer or '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Location</label>
+                <input class="form-control" name="location" value="{{ equipment.location or '' }}">
+              </div>
+                <div class="col-md-6">
+                  <label class="form-label">Facility</label>
+                  <select class="form-select" name="facility_id">
+                    <option value="">-- None --</option>
+                    {% for fac in facilities %}
+                      <option value="{{ fac.id }}" {% if equipment.facility_id == fac.id %}selected{% endif %}>{{ fac.name }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+              <div class="col-md-3">
+                <label class="form-label">Purchase Date</label>
+                <input class="form-control" type="date" name="purchase_date" value="{{ equipment.purchase_date.strftime('%Y-%m-%d') if equipment.purchase_date else '' }}">
+              </div>
+              <div class="col-md-3">
+                <label class="form-label">Status</label>
+                <select class="form-select" name="status">
+                  <option value="active" {% if equipment.status == 'active' %}selected{% endif %}>active</option>
+                  <option value="retired" {% if equipment.status == 'retired' %}selected{% endif %}>retired</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-primary">Save Changes</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
+{% call card('Calibration') %}
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <div>
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        {% if out_of_tolerance %}
+          <span class="badge bg-danger">Out of tolerance</span>
+        {% else %}
+          <span class="badge bg-success">In tolerance</span>
+        {% endif %}
+        {% if calibration_status == 'overdue' %}
+          <span class="badge bg-danger">Overdue</span>
+        {% elif calibration_status == 'due_soon' %}
+          <span class="badge bg-warning text-dark">Due Soon</span>
+        {% elif calibration_status == 'ok' %}
+          <span class="badge bg-success">OK</span>
+        {% else %}
+          <span class="badge bg-secondary">No Schedule</span>
+        {% endif %}
+        <span class="small text-muted">
+          {% if days_until_due is not none %}
+            {% if days_until_due < 0 %}
+              Overdue by {{ -days_until_due }} days
+            {% else %}
+              Due in {{ days_until_due }} days
+            {% endif %}
+          {% else %}
+            Due: —
+          {% endif %}
+        </span>
+      </div>
+      {% if oot_flags and oot_flags|length %}
+        <div class="small text-danger mt-1">
+          Flags:
+          {% for f in oot_flags %}
+            {% if not loop.first %} · {% endif %}
+            {{ f.type }}{% if f.unit %} ({{ f.unit }}){% endif %}: {{ '%.4g'|format(f.avg) }} {% if f.bound == 'min' %}&lt;{% else %}&gt;{% endif %} {{ f.bound }} {{ f.bound_value }} on {{ f.performed_at.strftime('%Y-%m-%d') if f.performed_at else '—' }}
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+    {% if lab_role in ['owner','admin','editor'] %}
+      <div class="d-flex gap-2">
+        <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#calibrationRoutineModal">Set Routine</button>
+        <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#addCalibrationTypeModal">Add Type</button>
+        <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#addCalibrationLogModal">Calibrate</button>
+      </div>
+    {% endif %}
+  </div>
+
+  <hr>
+
+  <h6 class="mb-2">Calibration Routines</h6>
+  {% if calibration_routines and calibration_routines|length %}
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Unit</th>
+            <th>Calibration Standard</th>
+            <th>Min</th>
+            <th>Max</th>
+            <th>Required</th>
+            <th>Last Performed</th>
+            <th>Next Due</th>
+            {% if lab_role in ['owner','admin','editor'] %}<th></th>{% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in calibration_routines %}
+            {% set status = routine_status.get(r.name) if routine_status else None %}
+            <tr>
+              <td>{{ r.name }}</td>
+              <td>{{ r.unit or '—' }}</td>
+              <td>{{ r.standard or '—' }}</td>
+              <td>{{ r.min_value if r.min_value is not none else '—' }}</td>
+              <td>{{ r.max_value if r.max_value is not none else '—' }}</td>
+              <td>{{ r.required_measurements if r.required_measurements is not none else '—' }}</td>
+              <td>{{ status.last_performed.strftime('%Y-%m-%d') if status and status.last_performed else '—' }}</td>
+              <td>{{ status.next_due.strftime('%Y-%m-%d') if status and status.next_due else '—' }}</td>
+              {% if lab_role in ['owner','admin','editor'] %}
+                <td class="text-end">
+                  <form method="post" action="{{ url_for('delete_equipment_calibration_type', lab_slug=(current_lab.slug or current_lab.id), equipment_id=equipment.id, routine_id=r.id) }}" onsubmit="return confirm('Delete this calibration type?');">
+                    <button class="btn btn-sm btn-outline-danger">Delete</button>
+                  </form>
+                </td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="text-muted">No calibration types defined.</div>
+  {% endif %}
+
+  <hr>
+
+  <h6 class="mb-2">Calibration Logs</h6>
+  {% set type_keys = [] %}
+  {% for r in calibration_routines %}
+    {% if r.name not in type_keys %}{% set _ = type_keys.append(r.name) %}{% endif %}
+  {% endfor %}
+  {% for log in sorted_cal_logs %}
+    {% set t = log.calibration_type or 'default' %}
+    {% if t not in type_keys %}{% set _ = type_keys.append(t) %}{% endif %}
+  {% endfor %}
+  {% if type_keys and type_keys|length %}
+    {% for t in type_keys %}
+      {% set status = routine_status.get(t) if routine_status else None %}
+      <div class="mb-3">
+        <div class="fw-semibold small mb-1">
+          {{ t }}{% if routine_map.get(t) and routine_map.get(t).unit %} ({{ routine_map.get(t).unit }}){% endif %}
+        </div>
+        <canvas class="calibrationChart" data-type="{{ t }}" data-next-due="{{ status.next_due.isoformat() if status and status.next_due else '' }}" height="120"></canvas>
+      </div>
+    {% endfor %}
+  {% else %}
+    <div class="text-muted">No calibration plots available.</div>
+  {% endif %}
+  {% if sorted_cal_logs %}
+    {% for group in sorted_cal_logs|groupby('calibration_type') %}
+      {% set type_label = group.grouper or 'default' %}
+      <div class="mb-3">
+        <div class="fw-semibold mb-1">{{ type_label }}</div>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Performed By</th>
+                <th>Next Due</th>
+                {% if lab_role in ['owner','admin','editor'] %}<th></th>{% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for log in group.list %}
+                <tr>
+                  <td>{{ log.performed_at.strftime('%Y-%m-%d') if log.performed_at else '' }}</td>
+                  <td>{{ log.performed_by or '' }}</td>
+                  <td>{{ log.next_due_date.strftime('%Y-%m-%d') if log.next_due_date else '' }}</td>
+                  {% if lab_role in ['owner','admin','editor'] %}
+                    <td class="text-end">
+                      <button
+                        class="btn btn-sm btn-outline-secondary"
+                        data-bs-toggle="modal"
+                        data-bs-target="#editCalibrationLogModal"
+                        data-log-id="{{ log.id }}"
+                        data-calibration-type="{{ log.calibration_type or '' }}"
+                        data-performed-by="{{ log.performed_by or '' }}"
+                        data-performed-at="{{ log.performed_at.strftime('%Y-%m-%dT%H:%M') if log.performed_at else '' }}"
+                      >Edit</button>
+                    </td>
+                  {% endif %}
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% endfor %}
+  {% else %}
+    <div class="text-muted">No calibration records.</div>
+  {% endif %}
+{% endcall %}
+
+{% if lab_role in ['owner','admin','editor'] %}
+  <div class="modal fade" id="calibrationRoutineModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <form method="post" action="{{ url_for('set_equipment_calibration_routine', lab_slug=(current_lab.slug or current_lab.id), equipment_id=equipment.id) }}">
+          <div class="modal-header">
+            <h5 class="modal-title">Calibration Routine</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <label class="form-label">Interval (days)</label>
+            <input class="form-control" name="calibration_interval_days" type="number" min="1" step="1" value="{{ equipment.calibration_interval_days if equipment.calibration_interval_days else '' }}" placeholder="e.g., 90">
+            <div class="form-text">Leave blank to remove the schedule.</div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-primary">Save Routine</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
+{% if lab_role in ['owner','admin','editor'] %}
+  <div class="modal fade" id="addCalibrationTypeModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <form method="post" action="{{ url_for('add_equipment_calibration_type', lab_slug=(current_lab.slug or current_lab.id), equipment_id=equipment.id) }}">
+          <div class="modal-header">
+            <h5 class="modal-title">Add Calibration Type</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-2">
+              <label class="form-label">Calibration Type</label>
+              <input class="form-control" name="name" placeholder="e.g., Mass" required>
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Calibration Standard</label>
+              <input class="form-control" name="standard" placeholder="e.g., What is the mass of your reference weight?">
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Unit</label>
+              <input class="form-control" name="unit" placeholder="e.g., g">
+            </div>
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label">Minimum</label>
+                <input class="form-control" name="min_value" type="number" step="any">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Maximum</label>
+                <input class="form-control" name="max_value" type="number" step="any">
+              </div>
+            </div>
+            <div class="mt-2">
+              <label class="form-label"># Measurements Required</label>
+              <input class="form-control" name="required_measurements" type="number" min="1" step="1">
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-primary">Add Type</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
+{% call card('Linked Experiments') %}
+  {% if experiment_links %}
+    <ul class="list-group">
+      {% for link in experiment_links %}
+        {% set exp = link.experiment %}
+        {% if exp %}
+          <li class="list-group-item">
+            <div class="d-flex justify-content-between align-items-start">
+              <div>
+                <a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), experiment_id=exp.id) if current_lab else url_for('view_experiment', experiment_id=exp.id) }}">{{ exp.title }}</a>
+                {% if link.role %}<div class="small text-muted">{{ link.role }}</div>{% endif %}
+                {% if link.notes %}<div class="small text-muted">{{ link.notes }}</div>{% endif %}
+              </div>
+              <div class="small text-muted">{{ exp.created_at.strftime('%Y-%m-%d') if exp.created_at else '' }}</div>
+            </div>
+          </li>
+        {% endif %}
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="text-muted">No linked experiments.</div>
+  {% endif %}
+{% endcall %}
+
+{% call card('Maintenance Logs') %}
+  {% if maintenance_logs %}
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Type</th>
+            <th>Performed By</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for log in maintenance_logs %}
+            <tr>
+              <td>{{ log.performed_at.strftime('%Y-%m-%d') if log.performed_at else '' }}</td>
+              <td>{{ log.maintenance_type or '' }}</td>
+              <td>{{ log.performed_by or '' }}</td>
+              <td>{{ log.notes or '' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="text-muted">No maintenance records.</div>
+  {% endif %}
+{% endcall %}
+
+
+{% if lab_role in ['owner','admin','editor'] %}
+  <div class="modal fade" id="addCalibrationLogModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <form method="post" action="{{ url_for('add_calibration_log', lab_slug=(current_lab.slug or current_lab.id), equipment_id=equipment.id) }}">
+          <div class="modal-header">
+            <h5 class="modal-title">Log Calibration</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label">Calibration Type</label>
+                <select class="form-select" name="calibration_type" id="calibrationTypeSelect">
+                  <option value="">(optional)</option>
+                  {% for r in calibration_routines %}
+                    <option value="{{ r.name }}">{{ r.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Performed By</label>
+                <select class="form-select" name="performed_by">
+                  <option value="">(optional)</option>
+                  {% for m in lab_members or [] %}
+                    <option value="{{ m.user.name or m.user.email }}">{{ m.user.name or m.user.email }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Performed At</label>
+                <input class="form-control" type="datetime-local" name="performed_at">
+              </div>
+            </div>
+            <div class="mt-2">
+              <label class="form-label">Measurements</label>
+              <div id="calibrationMeasurementsContainer" class="row g-2"></div>
+              <div class="form-text" id="calibrationMeasurementsHelp">Select a calibration type to set required measurements.</div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-primary">Save Calibration</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
+{% if lab_role in ['owner','admin','editor'] %}
+  <div class="modal fade" id="editCalibrationLogModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <form method="post" id="editCalibrationLogForm" data-action-template="{{ url_for('edit_calibration_log', lab_slug=(current_lab.slug or current_lab.id), log_id=0) }}">
+          <div class="modal-header">
+            <h5 class="modal-title">Edit Calibration Log</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label">Calibration Type</label>
+                <select class="form-select" name="calibration_type" id="editCalibrationTypeSelect">
+                  <option value="">(optional)</option>
+                  {% for r in calibration_routines %}
+                    <option value="{{ r.name }}">{{ r.name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Performed By</label>
+                <select class="form-select" name="performed_by" id="editPerformedBySelect">
+                  <option value="">(optional)</option>
+                  {% for m in lab_members or [] %}
+                    <option value="{{ m.user.name or m.user.email }}">{{ m.user.name or m.user.email }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Performed At</label>
+                <input class="form-control" type="datetime-local" name="performed_at" id="editPerformedAt">
+              </div>
+            </div>
+            <div class="mt-2">
+              <label class="form-label">Measurements</label>
+              <div id="editCalibrationMeasurementsContainer" class="row g-2"></div>
+              <div class="form-text" id="editCalibrationMeasurementsHelp">Select a calibration type to set required measurements.</div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-primary">Save Changes</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
+<script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
+<script>
+(function(){
+  const points = {{ chart_points|tojson }};
+  const routineMap = {{ routine_map|tojson }};
+  const experimentMarkersByType = {{ experiment_markers_by_type|tojson }};
+  const toleranceMap = {{ tolerance_map|tojson }};
+  function buildMarkerDatasets(markers){
+    const startOk = [];
+    const startFlag = [];
+    const endOk = [];
+    const endFlag = [];
+    markers.forEach(m => {
+      if (!m.timestamp) return;
+      const target = m.type === 'start'
+        ? (m.flagged ? startFlag : startOk)
+        : (m.flagged ? endFlag : endOk);
+      target.push({ timestamp: m.timestamp, title: m.title, url: m.url || '' });
+    });
+
+    const datasets = [];
+    if (startOk.length){
+      datasets.push({
+        label: 'Experiment start',
+        data: [],
+        showLine: true,
+        pointRadius: 0,
+        pointHitRadius: 10,
+        pointHoverRadius: 4,
+        borderColor: '#198754',
+        borderWidth: 2,
+        spanGaps: false,
+        _markerType: 'start',
+        _markerEvents: startOk,
+      });
+    }
+    if (startFlag.length){
+      datasets.push({
+        label: 'Experiment start (flagged)',
+        data: [],
+        showLine: true,
+        pointRadius: 0,
+        pointHitRadius: 10,
+        pointHoverRadius: 4,
+        borderColor: '#dc3545',
+        borderWidth: 2,
+        spanGaps: false,
+        _markerType: 'start',
+        _markerEvents: startFlag,
+      });
+    }
+    if (endOk.length){
+      datasets.push({
+        label: 'Experiment end',
+        data: [],
+        showLine: true,
+        pointRadius: 0,
+        pointHitRadius: 10,
+        pointHoverRadius: 4,
+        borderColor: '#198754',
+        borderWidth: 2,
+        spanGaps: false,
+        _markerType: 'end',
+        _markerEvents: endOk,
+      });
+    }
+    if (endFlag.length){
+      datasets.push({
+        label: 'Experiment end (flagged)',
+        data: [],
+        showLine: true,
+        pointRadius: 0,
+        pointHitRadius: 10,
+        pointHoverRadius: 4,
+        borderColor: '#dc3545',
+        borderWidth: 2,
+        spanGaps: false,
+        _markerType: 'end',
+        _markerEvents: endFlag,
+      });
+    }
+    return datasets;
+  }
+
+  function buildMarkerData(events, yMinAxis, yMaxAxis){
+    const data = [];
+    const steps = 12;
+    const minY = yMinAxis ?? 0;
+    const maxY = yMaxAxis ?? 1;
+    events.forEach(marker => {
+      for (let i = 0; i < steps; i++){
+        const y = minY + ((maxY - minY) * i / (steps - 1));
+        data.push({ x: marker.timestamp, y, label: marker.title, url: marker.url || '' });
+      }
+      data.push({ x: null, y: null });
+    });
+    return data;
+  }
+
+  function buildChart(canvas){
+    const type = canvas.dataset.type || 'default';
+    const nextDue = canvas.dataset.nextDue || '';
+    const filtered = points.filter(p => (p.calibration_type || 'default') === type && p.avg_measured !== null && p.avg_measured !== undefined);
+    const datasets = [];
+
+    if (filtered.length){
+      datasets.push({
+        label: `${type} measured`,
+        data: filtered.map(p => ({ x: p.performed_at, y: p.avg_measured })),
+        borderColor: '#0d6efd',
+        borderWidth: 2,
+        tension: 0,
+        spanGaps: true,
+      });
+    }
+
+    const routine = routineMap[type];
+    const markers = experimentMarkersByType[type] || [];
+    const allDates = filtered.map(p => p.performed_at).concat(markers.map(m => m.timestamp).filter(Boolean));
+    if (nextDue){
+      allDates.push(nextDue);
+    }
+    const minDate = allDates.length ? allDates.slice().sort()[0] : null;
+    const maxDate = allDates.length ? allDates.slice().sort().slice(-1)[0] : null;
+    if (routine && routine.min_value !== null && routine.min_value !== undefined && minDate && maxDate){
+      datasets.push({
+        label: `${type} min`,
+        data: [{ x: minDate, y: routine.min_value }, { x: maxDate, y: routine.min_value }],
+        borderColor: '#fd7e14',
+        borderWidth: 3,
+        pointRadius: 0,
+      });
+    }
+    if (routine && routine.max_value !== null && routine.max_value !== undefined && minDate && maxDate){
+      datasets.push({
+        label: `${type} max`,
+        data: [{ x: minDate, y: routine.max_value }, { x: maxDate, y: routine.max_value }],
+        borderColor: '#fd7e14',
+        borderWidth: 3,
+        pointRadius: 0,
+      });
+    }
+
+    datasets.push(...buildMarkerDatasets(markers));
+
+    const unit = routineMap[type] && routineMap[type].unit ? routineMap[type].unit : '';
+    const yAxisLabel = unit ? `${type} (${unit})` : type;
+
+    const chart = new Chart(canvas, {
+      type: 'line',
+      data: { datasets },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: 'bottom' },
+          tooltip: {
+            callbacks: {
+              title: (items) => {
+                if (!items || !items.length) return '';
+                const item = items[0];
+                const raw = item.raw || {};
+                if (raw && raw.x) return new Date(raw.x).toLocaleString();
+                return '';
+              },
+              label: (ctx) => {
+                const ds = ctx.dataset || {};
+                const raw = ctx.raw || {};
+                if (ds._markerType && raw && raw.label){
+                  const typeLabel = ds._markerType === 'start' ? 'Experiment start' : 'Experiment end';
+                  return `${typeLabel}: ${raw.label}`;
+                }
+                if (ds.label && raw && raw.y !== undefined && raw.y !== null){
+                  return `${ds.label}: ${raw.y}`;
+                }
+                return ds.label || '';
+              }
+            }
+          }
+        },
+        scales: {
+          x: { type: 'time', time: { unit: 'day' }, title: { display: true, text: 'Date' } },
+          y: { title: { display: true, text: yAxisLabel } }
+        },
+        onClick: (evt) => {
+          const xScale = chart.scales.x;
+          if (!xScale) return;
+          const clickValue = xScale.getValueForPixel(evt.x);
+          if (!clickValue) return;
+          const clickTime = new Date(clickValue).getTime();
+          if (!Number.isFinite(clickTime)) return;
+
+          let closest = null;
+          let minDiff = Infinity;
+          markers.forEach(m => {
+            if (!m.timestamp || !m.url) return;
+            const t = new Date(m.timestamp).getTime();
+            if (!Number.isFinite(t)) return;
+            const diff = Math.abs(t - clickTime);
+            if (diff < minDiff){
+              minDiff = diff;
+              closest = m;
+            }
+          });
+
+          if (closest && minDiff <= 12 * 60 * 60 * 1000){
+            window.location.href = closest.url;
+          }
+        }
+      }
+    });
+
+    const updateMarkerLines = () => {
+      const yScale = chart.scales.y;
+      if (!yScale) return;
+      chart.data.datasets.forEach(ds => {
+        if (ds._markerEvents){
+          ds.data = buildMarkerData(ds._markerEvents, yScale.min, yScale.max);
+        }
+      });
+      chart.update('none');
+    };
+
+    updateMarkerLines();
+  }
+
+  document.querySelectorAll('.calibrationChart').forEach(buildChart);
+})();
+</script>
+
+<script>
+(function(){
+  const routineMap = {{ routine_map|tojson }};
+  const logValuesMap = {{ log_values_map|tojson }};
+
+  function renderInputs(type, container, help, values){
+    container.innerHTML = '';
+    const routine = routineMap[type];
+    let required = routine && routine.required_measurements ? Number(routine.required_measurements) : 0;
+    if (!required){
+      required = values && values.length ? values.length : 0;
+    }
+    if (!required){
+      help.textContent = 'Select a calibration type to set required measurements.';
+      return;
+    }
+
+    const standardText = routine && routine.standard ? ` Standard: ${routine.standard}` : '';
+    const unitText = routine && routine.unit ? ` (${routine.unit})` : '';
+    help.textContent = `Enter ${required} measurements.${standardText}`;
+
+    for (let i = 0; i < required; i++){
+      const col = document.createElement('div');
+      col.className = 'col-md-3';
+      const label = document.createElement('label');
+      label.className = 'form-label';
+      label.textContent = `Measurement ${i + 1}${unitText}`;
+      const input = document.createElement('input');
+      input.className = 'form-control';
+      input.type = 'number';
+      input.step = 'any';
+      input.name = 'measurements';
+      input.required = true;
+      if (values && values[i] !== undefined){
+        input.value = values[i];
+      }
+      col.appendChild(label);
+      col.appendChild(input);
+      container.appendChild(col);
+    }
+  }
+
+  const typeSelect = document.getElementById('calibrationTypeSelect');
+  const container = document.getElementById('calibrationMeasurementsContainer');
+  const help = document.getElementById('calibrationMeasurementsHelp');
+  if (typeSelect && container){
+    const renderAdd = () => renderInputs(typeSelect.value, container, help, []);
+    typeSelect.addEventListener('change', renderAdd);
+    renderAdd();
+  }
+
+  const editModal = document.getElementById('editCalibrationLogModal');
+  if (editModal){
+    editModal.addEventListener('show.bs.modal', function (event) {
+      const button = event.relatedTarget;
+      if (!button) return;
+      const logId = button.getAttribute('data-log-id');
+      const type = button.getAttribute('data-calibration-type') || '';
+      const performedBy = button.getAttribute('data-performed-by') || '';
+      const performedAt = button.getAttribute('data-performed-at') || '';
+
+      const form = document.getElementById('editCalibrationLogForm');
+      const actionTemplate = form.getAttribute('data-action-template');
+      if (actionTemplate){
+        form.action = actionTemplate.replace('/0/', `/${logId}/`);
+      }
+
+      const typeSelectEdit = document.getElementById('editCalibrationTypeSelect');
+      const performedBySelect = document.getElementById('editPerformedBySelect');
+      const performedAtInput = document.getElementById('editPerformedAt');
+      const editContainer = document.getElementById('editCalibrationMeasurementsContainer');
+      const editHelp = document.getElementById('editCalibrationMeasurementsHelp');
+
+      if (typeSelectEdit){
+        typeSelectEdit.value = type;
+      }
+      if (performedBySelect){
+        performedBySelect.value = performedBy;
+        if (performedBy && performedBySelect.value !== performedBy){
+          const opt = document.createElement('option');
+          opt.value = performedBy;
+          opt.textContent = performedBy;
+          performedBySelect.appendChild(opt);
+          performedBySelect.value = performedBy;
+        }
+      }
+      if (performedAtInput){
+        performedAtInput.value = performedAt;
+      }
+
+      const values = logValuesMap[String(logId)] || [];
+      if (typeSelectEdit && editContainer && editHelp){
+        renderInputs(typeSelectEdit.value, editContainer, editHelp, values);
+        typeSelectEdit.addEventListener('change', function(){
+          renderInputs(typeSelectEdit.value, editContainer, editHelp, values);
+        }, { once: true });
+      }
+    });
+  }
+})();
+</script>
+
+{% endblock %}

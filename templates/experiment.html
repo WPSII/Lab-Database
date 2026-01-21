@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import documents_card, card %}
 {% block content %}
 
 <p class="mb-3">
@@ -16,96 +17,108 @@
 </div>
 
 <div class="card card-body mb-3">
-  <h2 class="mb-1">{{ experiment.title }}</h2>
-  <div class="text-muted">
-    Project:
-    <a href="{{ url_for('view_project', lab_slug=(current_lab.slug or current_lab.id), project_id=experiment.project.id) }}">{{ experiment.project.title }}</a>
-    &middot; Created {{ experiment.created_at.strftime('%Y-%m-%d') }}
+  <div class="d-flex justify-content-between align-items-start gap-2">
+    <div>
+      <h2 class="mb-1">{{ experiment.title }}</h2>
+      <div class="text-muted">
+        Project:
+        <a href="{{ url_for('view_project', lab_slug=(current_lab.slug or current_lab.id), project_id=experiment.project.id) }}">{{ experiment.project.title }}</a>
+        &middot; Created {{ experiment.created_at.strftime('%Y-%m-%d') }}
+      </div>
+    </div>
+    {% if lab_role in ['owner','admin','editor'] %}
+      <button class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#editExperimentModal">Edit Details</button>
+    {% endif %}
   </div>
 
-  {# Breadcrumb from root → current #}
-  {% macro breadcrumb(exp) -%}
-    {% if exp.parent %}
-      {{ breadcrumb(exp.parent) }} &raquo;
-    {% endif %}
-    {% if exp.id == experiment.id %}
-      <strong>{{ exp.title }}</strong>
-    {% else %}
-      <a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=experiment.project.id, experiment_id=exp.id) }}">{{ exp.title }}</a>
-    {% endif %}
-  {%- endmacro %}
-
-  {% if experiment.parent %}
-    <div class="small text-muted mt-2">
-      Lineage: {{ breadcrumb(experiment) }}
+  {% if experiment_equipment_flags and experiment_equipment_flags|length %}
+    <div class="alert alert-danger mt-3 mb-0">
+      <div class="fw-semibold mb-1">Flags</div>
+      <ul class="mb-0">
+        {% for item in experiment_equipment_flags %}
+          <li>
+            <a class="link-danger" href="{{ item.url }}">{{ item.equipment_name }}</a>
+          </li>
+        {% endfor %}
+      </ul>
     </div>
   {% endif %}
+
+  <div class="mt-3">
+    {% if experiment.description %}
+      <pre class="mb-0" style="white-space:pre-wrap">{{ experiment.description }}</pre>
+    {% else %}
+      <div class="text-muted">No details yet.</div>
+    {% endif %}
+  </div>
+  <div class="small text-muted mt-2">
+    Start: {{ experiment.start_at.strftime('%Y-%m-%d') if experiment.start_at else '—' }}
+    &middot; Stop: {{ experiment.end_at.strftime('%Y-%m-%d') if experiment.end_at else '—' }}
+  </div>
 </div>
+
+{% if lab_role in ['owner','admin','editor'] %}
+  <div class="modal fade" id="editExperimentModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <form method="post" action="{{ url_for('edit_experiment_details', experiment_id=experiment.id) }}">
+          <div class="modal-header">
+            <h5 class="modal-title">Edit Experiment Details</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-2">
+              <label class="form-label">Title</label>
+              <input class="form-control" name="title" value="{{ experiment.title }}" required>
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Details</label>
+              <textarea class="form-control" name="details" rows="5" placeholder="Describe goals, parameters, notes...">{{ experiment.description or '' }}</textarea>
+            </div>
+            <div class="row g-2">
+              <div class="col-md-6">
+                <label class="form-label">Start Date</label>
+                <input type="date" class="form-control" name="start_at" value="{{ experiment.start_at.strftime('%Y-%m-%d') if experiment.start_at else '' }}">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">Stop Date</label>
+                <input type="date" class="form-control" name="end_at" value="{{ experiment.end_at.strftime('%Y-%m-%d') if experiment.end_at else '' }}">
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-primary">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endif %}
 
 <div class="row g-3">
   <div class="col-lg-6">
 
-    <!-- Details (read-only view) -->
-    <div class="card card-body mb-3">
-      <h5 class="mb-2">Details</h5>
-      {% if experiment.description %}
-        <pre class="mb-0" style="white-space:pre-wrap">{{ experiment.description }}</pre>
-      {% else %}
-        <div class="text-muted mb-0">No details yet.</div>
-      {% endif %}
-    </div>
-
-    <!-- Edit Details -->
-    <div class="card card-body mb-3">
-      <h5 class="mb-2">Edit Details</h5>
-      <form method="post" action="{{ url_for('edit_experiment_details', experiment_id=experiment.id) }}">
-        <div class="mb-2">
-          <label class="form-label">Title</label>
-          <input class="form-control" name="title" value="{{ experiment.title }}" required>
-        </div>
-        <div class="mb-2">
-          <label class="form-label">Details</label>
-          <textarea class="form-control" name="details" rows="5" placeholder="Describe goals, parameters, notes...">{{ experiment.description or '' }}</textarea>
-        </div>
-        <div class="row g-2">
-          <div class="col-md-6">
-            <label class="form-label">Start</label>
-            <input type="datetime-local" class="form-control" name="start_at" value="{{ experiment.start_at.strftime('%Y-%m-%dT%H:%M') if experiment.start_at else '' }}">
-          </div>
-          <div class="col-md-6">
-            <label class="form-label">End</label>
-            <input type="datetime-local" class="form-control" name="end_at" value="{{ experiment.end_at.strftime('%Y-%m-%dT%H:%M') if experiment.end_at else '' }}">
-          </div>
-        </div>
-        <button class="btn btn-primary mt-2">Save</button>
-      </form>
-    </div>
-
     <!-- Documents -->
-    <div class="card card-body mb-3">
-      <h5 class="mb-2">Documents</h5>
-      <ul class="list-group mb-3">
-        {% for d in experiment.documents %}
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <span>{{ d.filename }}</span>
-            <a class="btn btn-sm btn-outline-secondary"
-               href="{{ url_for('download', doc_id=d.id) }}">Download</a>
-          </li>
-        {% else %}
-          <li class="list-group-item">No documents uploaded.</li>
-        {% endfor %}
-      </ul>
-      <form method="post" action="{{ url_for('upload_document', experiment_id=experiment.id) }}" enctype="multipart/form-data">
-        <div class="input-group">
-          <input type="file" class="form-control" name="file" required>
-          <button class="btn btn-primary">Upload</button>
-        </div>
-      </form>
-    </div>
+    {{ documents_card(
+      'Documents',
+      experiment.documents,
+      'download',
+      'upload_document',
+      {'experiment_id': experiment.id},
+      show_upload=True,
+      show_delete=(lab_role in ['owner','admin','editor']),
+      delete_endpoint='delete_experiment_doc'
+    ) }}
 
 <!-- Linked Samples -->
-<div class="card card-body mb-3">
-  <h5 class="mb-2">Linked Samples</h5>
+{% call card('Linked Samples') %}
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <div></div>
+    {% if lab_role in ['owner','admin','editor'] %}
+      <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#linkSamplesModal">Select Samples</button>
+    {% endif %}
+  </div>
 
   {% macro render_linked_sample(node, linked_ids) -%}
     <li class="mb-1">
@@ -133,178 +146,353 @@
   {% else %}
     <div class="text-muted">No samples linked yet.</div>
   {% endif %}
-</div>
+{% endcall %}
 
 
 
   </div>
   <div class="col-lg-6">
-
-    <!-- LINKED EXPERIMENTS -->
+    <!-- Equipment -->
     <div class="card card-body mb-3">
-      <div class="d-flex justify-content-between align-items-center">
-        <h5 class="mb-2">Linked Experiments</h5>
+      <h5 class="mb-2">Equipment</h5>
+
+      <div class="mb-3">
+        <h6 class="mb-1">Link Equipment to this Experiment</h6>
+        <form method="post" action="{{ url_for('add_experiment_equipment', experiment_id=experiment.id) }}">
+          <div class="row g-2">
+            <div class="col-md-6">
+              <label class="form-label">Equipment</label>
+              <select name="equipment_id" class="form-select" required>
+                <option value="">Select equipment…</option>
+                {% for e in equipment_choices %}
+                  <option value="{{ e.id }}">{{ e.name }}{% if e.model %} · {{ e.model }}{% endif %}</option>
+                {% else %}
+                  <option disabled>No equipment available</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Role / Notes</label>
+              <input name="role" class="form-control" placeholder="e.g., measurement instrument">
+            </div>
+          </div>
+          <div class="mt-2">
+            <input type="text" name="notes" class="form-control" placeholder="Optional notes">
+          </div>
+          <div class="mt-2">
+            <button class="btn btn-outline-primary">Link Equipment</button>
+          </div>
+        </form>
       </div>
 
-      {# Tree macro expects exp_tree = dict{id,title,is_current,children:[...] } #}
-      {% macro render_exp_node(n) -%}
-        <li class="mb-1">
-          {% if n.is_current %}
-            <strong><a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=experiment.project.id, experiment_id=n.id) }}">{{ n.title }}</a></strong>
-            <span class="badge bg-primary ms-2">current</span>
+      <div class="mb-0">
+        <h6 class="mb-1">Linked Equipment</h6>
+        <ul class="list-group">
+          {% for link in experiment.equipment_links %}
+            <li class="list-group-item">
+              <div class="d-flex justify-content-between align-items-start">
+                <div>
+                  <a href="{{ url_for('view_equipment', lab_slug=(current_lab.slug or current_lab.id), equipment_id=link.equipment.id) if current_lab else url_for('view_equipment', equipment_id=link.equipment.id) }}">{{ link.equipment.name }}</a>
+                  {% if link.role %}<div class="small text-muted">{{ link.role }}</div>{% endif %}
+                  {% if link.notes %}<div class="small text-muted">{{ link.notes }}</div>{% endif %}
+                  {% set title = equipment_calibration_title.get(link.equipment.id) if equipment_calibration_title else None %}
+                  {% if title %}
+                    <div class="small mt-1">
+                      <div class="d-flex flex-wrap align-items-center gap-2">
+                        {% if title.out_of_tolerance %}
+                          <span class="badge bg-danger">Out of tolerance</span>
+                        {% else %}
+                          <span class="badge bg-success">In tolerance</span>
+                        {% endif %}
+                      </div>
+                      {% if title.oot_flags and title.oot_flags|length %}
+                        <div class="text-danger mt-1">
+                          Flags:
+                          {% for f in title.oot_flags %}
+                            {% if not loop.first %} · {% endif %}
+                            {{ f.type }}{% if f.unit %} ({{ f.unit }}){% endif %}: {{ '%.4g'|format(f.avg) }} {% if f.bound == 'min' %}&lt;{% else %}&gt;{% endif %} {{ f.bound }} {{ f.bound_value }} on {{ f.performed_at.strftime('%Y-%m-%d') if f.performed_at else '—' }}
+                          {% endfor %}
+                        </div>
+                      {% endif %}
+                      <div class="mt-1">
+                        {% if title.calibration_status == 'overdue' %}
+                          <span class="badge bg-danger">Overdue</span>
+                        {% elif title.calibration_status == 'due_soon' %}
+                          <span class="badge bg-warning text-dark">Due Soon</span>
+                        {% elif title.calibration_status == 'ok' %}
+                          <span class="badge bg-success">OK</span>
+                        {% else %}
+                          <span class="badge bg-secondary">No Schedule</span>
+                        {% endif %}
+                        <span class="text-muted ms-2">
+                          {% if title.days_until_due is not none %}
+                            {% if title.days_until_due < 0 %}
+                              Overdue by {{ -title.days_until_due }} days
+                            {% else %}
+                              Due in {{ title.days_until_due }} days
+                            {% endif %}
+                          {% else %}
+                            Due: —
+                          {% endif %}
+                        </span>
+                      </div>
+                    </div>
+                  {% endif %}
+                  {% set tol = equipment_tolerance_flags.get(link.equipment.id) if equipment_tolerance_flags else None %}
+                  {% if tol %}
+                    <div class="small mt-1">
+                      <span class="badge bg-danger">Out of tolerance during experiment period</span>
+                      <span class="text-muted ms-2">{{ tol.label }}</span>
+                    </div>
+                  {% endif %}
+                  {% set cal = equipment_calibration.get(link.equipment.id) if equipment_calibration else None %}
+                  {% if cal %}
+                    <div class="small mt-1">
+                      {% if cal.status in ['overdue_before','overdue_during'] %}
+                        <span class="badge bg-danger">Out of calibration</span>
+                      {% elif cal.status == 'ok' %}
+                        <span class="badge bg-success">In calibration</span>
+                      {% elif cal.status == 'missing' %}
+                        <span class="badge bg-warning text-dark">No record</span>
+                      {% elif cal.status == 'no_schedule' %}
+                        <span class="badge bg-secondary">No schedule</span>
+                      {% else %}
+                        <span class="badge bg-secondary">Unknown</span>
+                      {% endif %}
+                      <span class="text-muted ms-2">{{ cal.label }}</span>
+                    </div>
+                  {% endif %}
+                </div>
+              </div>
+            </li>
           {% else %}
-            <a href="{{ url_for('view_experiment', lab_slug=(current_lab.slug or current_lab.id), project_id=experiment.project.id, experiment_id=n.id) }}">{{ n.title }}</a>
-          {% endif %}
-          {% if n.children and n.children|length %}
-            <ul class="mt-1">
-              {% for c in n.children %}
-                {{ render_exp_node(c) }}
-              {% endfor %}
-            </ul>
-          {% endif %}
-        </li>
-      {%- endmacro %}
-
-      {% if exp_tree %}
-        <ul class="mb-3">
-          {{ render_exp_node(exp_tree) }}
+            <li class="list-group-item text-muted">No equipment linked yet.</li>
+          {% endfor %}
         </ul>
-      {% else %}
-        <div class="text-muted mb-3">No parent/child links yet.</div>
-      {% endif %}
-
-      <hr class="my-3">
-
-      <!-- Link EXISTING experiments -->
-      <div class="row g-2">
-        <div class="col-md-6">
-          <form method="post" action="{{ url_for('link_existing_parent', experiment_id=experiment.id) }}">
-            <label class="form-label">Link existing <strong>Parent</strong></label>
-            <select class="form-select mb-2" name="parent_id" required>
-              <option value="">Select experiment…</option>
-              {% for opt in parent_choices %}
-                <option value="{{ opt.id }}">{{ opt.title }}</option>
-              {% endfor %}
-            </select>
-            <button class="btn btn-outline-primary w-100">Link Parent</button>
-          </form>
-        </div>
-        <div class="col-md-6">
-          <form method="post" action="{{ url_for('link_existing_child', experiment_id=experiment.id) }}">
-            <label class="form-label">Link existing <strong>Child</strong></label>
-            <select class="form-select mb-2" name="child_id" required>
-              <option value="">Select experiment…</option>
-              {% for opt in child_choices %}
-                <option value="{{ opt.id }}">{{ opt.title }}</option>
-              {% endfor %}
-            </select>
-            <button class="btn btn-outline-primary w-100">Link Child</button>
-          </form>
-        </div>
-      </div>
-
-      <div class="form-text mt-2">
-        Existing lists exclude the current experiment and any nodes that would create a cycle.
-      </div>
-
-      <hr class="my-3">
-
-      <!-- Create NEW parent/child experiments -->
-      <div class="row g-3">
-        <div class="col-md-6">
-          <h6>Create Parent Experiment</h6>
-          <form method="post" action="{{ url_for('create_parent_experiment', experiment_id=experiment.id) }}">
-            <div class="mb-2">
-              <label class="form-label">Title</label>
-              <input class="form-control" name="title" required placeholder="e.g., Nitridation – Stage 1">
-            </div>
-            <div class="mb-2">
-              <label class="form-label">Details</label>
-              <textarea class="form-control" name="details" rows="4" placeholder="Parameters, notes, etc."></textarea>
-            </div>
-            <button class="btn btn-primary">Create & Link Parent</button>
-          </form>
-        </div>
-        <div class="col-md-6">
-          <h6>Create Child Experiment</h6>
-          <form method="post" action="{{ url_for('create_child_experiment', experiment_id=experiment.id) }}">
-            <div class="mb-2">
-              <label class="form-label">Title</label>
-              <input class="form-control" name="title" required placeholder="e.g., Nitridation – Step 2">
-            </div>
-            <div class="mb-2">
-              <label class="form-label">Details</label>
-              <textarea class="form-control" name="details" rows="4" placeholder="Parameters, notes, etc."></textarea>
-            </div>
-            <button class="btn btn-primary">Create & Link Child</button>
-          </form>
-        </div>
       </div>
     </div>
-
   </div>
-  </div>
-
-  <!-- Equipment linking & create child sample -->
-  <div class="card card-body mb-3">
-    <h5 class="mb-2">Equipment & Child Samples</h5>
-
-    <div class="mb-3">
-      <h6 class="mb-1">Link Equipment to this Experiment</h6>
-      <form method="post" action="{{ url_for('add_experiment_equipment', experiment_id=experiment.id) }}">
-        <div class="row g-2">
-          <div class="col-md-6">
-            <label class="form-label">Equipment</label>
-            <select name="equipment_id" class="form-select" required>
-              <option value="">Select equipment…</option>
-              {% for e in equipment_choices %}
-                <option value="{{ e.id }}">{{ e.name }}{% if e.model %} · {{ e.model }}{% endif %}</option>
-              {% else %}
-                <option disabled>No equipment available</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="col-md-6">
-            <label class="form-label">Role / Notes</label>
-            <input name="role" class="form-control" placeholder="e.g., measurement instrument">
-          </div>
-        </div>
-        <div class="mt-2">
-          <input type="text" name="notes" class="form-control" placeholder="Optional notes">
-        </div>
-        <div class="mt-2">
-          <button class="btn btn-outline-primary">Link Equipment</button>
-        </div>
-      </form>
-    </div>
-
-    <hr>
-
-    <div>
-      <h6 class="mb-1">Create Child Sample from Project Sample</h6>
-      <form method="post" action="{{ url_for('experiment_create_child_sample', experiment_id=experiment.id) }}">
-        <div class="row g-2">
-          <div class="col-md-6">
-            <label class="form-label">Parent Sample</label>
-            <select name="parent_sample_id" class="form-select" required>
-              <option value="">Select sample…</option>
-              {% for s in experiment.project.samples %}
-                <option value="{{ s.id }}">{{ s.name }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="col-md-6">
-            <label class="form-label">Child Name</label>
-            <input name="name" class="form-control" placeholder="Child sample name" required>
-          </div>
-        </div>
-        <div class="mt-2">
-          <button class="btn btn-primary">Create Child Sample</button>
-        </div>
-      </form>
-    </div>
-  </div>
-
 </div>
 
+<div class="row g-3">
+  <div class="col-12">
+    {% call card('Experiment Timeline') %}
+      <div id="experimentTimelineContainer">
+        <p class="text-muted">Loading timeline…</p>
+      </div>
+    {% endcall %}
+  </div>
+</div>
+
+<script>
+(function(){
+  const labSlug = "{{ current_lab.slug or current_lab.id }}";
+  const apiBase = labSlug ? `/lab/${labSlug}` : '';
+  const experimentId = {{ experiment.id|tojson }};
+
+  function renderTimeline(data){
+    const container = document.getElementById('experimentTimelineContainer');
+    container.innerHTML = '';
+    const months = Object.keys(data).sort().reverse();
+    if (!months.length){
+      container.innerHTML = '<p class="text-muted">No timeline events yet.</p>';
+      return;
+    }
+    if (!monthPicker.value) monthPicker.value = months[0];
+    monthPicker.min = months[months.length - 1];
+    monthPicker.max = months[0];
+
+    const m = monthPicker.value;
+    const [yearStr, monthStr] = m.split('-');
+    const year = Number(yearStr);
+    const monthIndex0 = Number(monthStr) - 1;
+
+    const box = document.createElement('div');
+    box.className = 'mb-3 border rounded p-2';
+    const h = document.createElement('h6');
+    h.textContent = new Date(Date.UTC(year, monthIndex0, 1)).toLocaleString(undefined, { month: 'long', year: 'numeric' });
+    box.appendChild(h);
+
+    const first = new Date(Date.UTC(year, monthIndex0, 1));
+    const last = new Date(Date.UTC(year, monthIndex0 + 1, 0));
+    const daysInMonth = last.getUTCDate();
+    const startDay = first.getUTCDay();
+
+    const eventsByDay = {};
+    (data[m] || []).forEach(ev => {
+      const dayKey = (ev.timestamp || '').slice(0, 10);
+      if (!eventsByDay[dayKey]) eventsByDay[dayKey] = [];
+      eventsByDay[dayKey].push(ev);
+    });
+
+    const table = document.createElement('table');
+    table.className = 'table table-sm table-bordered mb-0';
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th class="text-center">Sun</th><th class="text-center">Mon</th><th class="text-center">Tue</th><th class="text-center">Wed</th><th class="text-center">Thu</th><th class="text-center">Fri</th><th class="text-center">Sat</th></tr>';
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+
+    let day = 1 - startDay;
+    for (let week = 0; week < 6; week++){
+      const tr = document.createElement('tr');
+      for (let d = 0; d < 7; d++){
+        const td = document.createElement('td');
+        td.style.verticalAlign = 'top';
+        td.style.minWidth = '120px';
+        td.style.height = '90px';
+        if (day < 1 || day > daysInMonth){
+          td.className = 'bg-body-tertiary';
+          tr.appendChild(td);
+          day++;
+          continue;
+        }
+        const dayStr = String(day).padStart(2, '0');
+        const dateKey = `${m}-${dayStr}`;
+        const header = document.createElement('div');
+        header.className = 'fw-semibold small mb-1';
+        header.textContent = day;
+        td.appendChild(header);
+
+        const evs = eventsByDay[dateKey] || [];
+        evs.forEach(ev => {
+          const item = document.createElement('div');
+          item.className = 'small text-truncate';
+          const typeLabel = (ev.type || '').replace('_', ' ');
+          const label = `${(ev.timestamp || '').slice(11,16)} · ${typeLabel} · ${ev.title}`;
+          if (ev.url){
+            const a = document.createElement('a');
+            a.href = ev.url;
+            a.textContent = label;
+            item.appendChild(a);
+          } else {
+            item.textContent = label;
+          }
+          td.appendChild(item);
+        });
+
+        tr.appendChild(td);
+        day++;
+      }
+      tbody.appendChild(tr);
+      if (day > daysInMonth) break;
+    }
+
+    table.appendChild(tbody);
+    box.appendChild(table);
+    container.appendChild(box);
+  }
+
+  const navBar = document.createElement('div');
+  navBar.className = 'mb-2 d-flex flex-wrap align-items-center gap-2';
+  const btnPrev = document.createElement('button'); btnPrev.className='btn btn-sm btn-outline-secondary'; btnPrev.textContent='Prev';
+  const monthPicker = document.createElement('input');
+  monthPicker.type = 'month';
+  monthPicker.className = 'form-control form-control-sm';
+  monthPicker.style.maxWidth = '180px';
+  monthPicker.setAttribute('aria-label', 'Select month');
+  const btnNext = document.createElement('button'); btnNext.className='btn btn-sm btn-outline-secondary'; btnNext.textContent='Next';
+  navBar.appendChild(btnPrev); navBar.appendChild(monthPicker); navBar.appendChild(btnNext);
+  const containerWrap = document.getElementById('experimentTimelineContainer');
+  containerWrap.parentNode.insertBefore(navBar, containerWrap);
+
+  function monthIndexValue(ym){
+    const parts = (ym || '').split('-');
+    if (parts.length !== 2) return null;
+    const y = Number(parts[0]);
+    const m = Number(parts[1]);
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
+    return y * 12 + (m - 1);
+  }
+
+  function addMonths(ym, delta){
+    const parts = (ym || '').split('-');
+    if (parts.length !== 2) return null;
+    let y = Number(parts[0]);
+    let m = Number(parts[1]);
+    if (!Number.isFinite(y) || !Number.isFinite(m)) return null;
+    m = m - 1 + delta;
+    y = y + Math.floor(m / 12);
+    m = (m % 12 + 12) % 12;
+    const mm = String(m + 1).padStart(2, '0');
+    return `${y}-${mm}`;
+  }
+
+  function stepMonth(delta){
+    const next = addMonths(monthPicker.value, delta);
+    if (!next) return;
+    const minIdx = monthIndexValue(monthPicker.min);
+    const maxIdx = monthIndexValue(monthPicker.max);
+    const nextIdx = monthIndexValue(next);
+    if (minIdx != null && nextIdx < minIdx) return;
+    if (maxIdx != null && nextIdx > maxIdx) return;
+    monthPicker.value = next;
+    renderTimeline(window._experiment_tl_data || {});
+  }
+  btnPrev.addEventListener('click', ()=> stepMonth(-1));
+  btnNext.addEventListener('click', ()=> stepMonth(1));
+  monthPicker.addEventListener('change', ()=> renderTimeline(window._experiment_tl_data || {}));
+  monthPicker.addEventListener('input', ()=> renderTimeline(window._experiment_tl_data || {}));
+
+  async function loadTimeline(){
+    const url = `${apiBase}/experiment/${experimentId}/timeline`;
+    const res = await fetch(url);
+    if (res.ok){
+      const data = await res.json();
+      window._experiment_tl_data = data;
+      renderTimeline(data);
+    } else {
+      document.getElementById('experimentTimelineContainer').innerHTML = '<p class="text-danger">Failed to load timeline.</p>';
+    }
+  }
+
+  loadTimeline();
+})();
+</script>
+
 {% endblock %}
+
+{% if lab_role in ['owner','admin','editor'] %}
+  <div class="modal fade" id="linkSamplesModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <form method="post" action="{{ url_for('update_experiment_samples', experiment_id=experiment.id) }}">
+          <div class="modal-header">
+            <h5 class="modal-title">Select Linked Samples</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            {% macro render_sample_select(node, linked_ids) -%}
+              <li class="mb-1">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" name="sample_ids" value="{{ node.id }}" id="sample-link-{{ node.id }}" {% if node.id in linked_ids %}checked{% endif %}>
+                  <label class="form-check-label" for="sample-link-{{ node.id }}">
+                    {{ node.name }}
+                  </label>
+                </div>
+                {% if node.children and node.children|length %}
+                  <ul class="mt-1">
+                    {% for c in node.children %}
+                      {{ render_sample_select(c, linked_ids) }}
+                    {% endfor %}
+                  </ul>
+                {% endif %}
+              </li>
+            {%- endmacro %}
+
+            {% if linked_sample_tree %}
+              <ul class="mb-0">
+                {{ render_sample_select(linked_sample_tree, linked_sample_ids) }}
+              </ul>
+            {% else %}
+              <div class="text-muted">No samples available.</div>
+            {% endif %}
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button class="btn btn-primary">Save Links</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endif %}
